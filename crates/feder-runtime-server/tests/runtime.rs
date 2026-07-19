@@ -13,27 +13,13 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use axum::{
-    Json,
-    extract::{Path, State},
-    http::{StatusCode, header},
-    response::{IntoResponse, Response},
-};
+mod common;
 
-use crate::app::AppState;
-
-pub async fn actor(
-    State(app_state): State<AppState>,
-    Path(username): Path<String>,
-) -> Result<Response, StatusCode> {
-    if username != app_state.username {
-        return Err(StatusCode::NOT_FOUND);
-    }
-    let local_actor = app_state.local_actor.clone();
-
-    Ok((
-        [(header::CONTENT_TYPE, "application/activity+json")],
-        Json(local_actor),
-    )
-        .into_response())
-}
+#[path = "cases/actor.rs"]
+mod actor;
+#[path = "cases/app.rs"]
+mod app;
+#[path = "cases/inbox.rs"]
+mod inbox;
+#[path = "cases/webfinger.rs"]
+mod webfinger;
