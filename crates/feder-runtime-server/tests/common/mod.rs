@@ -43,7 +43,7 @@ pub struct RecordedRequest {
 pub async fn spawn_inbox_server(
     response_status: StatusCode,
 ) -> (String, mpsc::Receiver<RecordedRequest>, JoinHandle<()>) {
-    let (sender, receiver) = mpsc::channel(1);
+    let (sender, receiver) = mpsc::channel(2);
     let app = Router::new().route(
         "/inbox",
         post(move |headers: HeaderMap, uri: Uri, body: Bytes| {

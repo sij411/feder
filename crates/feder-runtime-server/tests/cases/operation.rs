@@ -23,7 +23,7 @@ use feder_runtime_server::{
     Error, actor::ActorResolveError, config::StorageConfig, send::SendError, storage::RuntimeStore,
 };
 use feder_vocab::{Actor, Iri, Reference};
-use tokio::task::JoinHandle;
+use tokio::{sync::mpsc::error::TryRecvError, task::JoinHandle};
 
 use crate::common::{spawn_inbox_server, temporary_database_path, test_app_state, test_config};
 
@@ -165,6 +165,30 @@ async fn create_note_delivers_to_each_persisted_follower() {
     carol_requests.recv().await.expect("receive Carol delivery");
     bob_server.abort();
     carol_server.abort();
+}
+
+#[tokio::test]
+async fn create_note_delivers_once_when_direct_actor_is_also_a_follower() {
+    let (inbox, mut requests, inbox_server) = spawn_inbox_server(StatusCode::ACCEPTED).await;
+    let (actor_id, _missing_actor_id, actor_server) = spawn_actor_server(&inbox).await;
+    let state = test_app_state(test_config()).expect("build app state");
+    store_follower(&state, actor_id.as_str(), &inbox);
+    let mut input = create_note_input();
+    input.to = feder_vocab::References::one(
+        state
+            .local_actor
+            .followers
+            .clone()
+            .expect("local actor has followers collection"),
+    );
+    input.cc = feder_vocab::References::one(actor_id);
+
+    state.create_note(input).await.expect("create note");
+
+    requests.recv().await.expect("receive Create delivery");
+    assert!(matches!(requests.try_recv(), Err(TryRecvError::Empty)));
+    actor_server.abort();
+    inbox_server.abort();
 }
 
 #[tokio::test]

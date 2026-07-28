@@ -59,13 +59,17 @@ impl AppState {
     ) -> Result<(Vec<SendActivity>, Option<ActorResolveError>), Error> {
         let mut resolved = Vec::new();
         let mut first_actor_resolve_error = None;
+        let mut seen_inboxes = HashSet::new();
 
         for action in actions {
             if let Action::SendActivity(send) = action {
                 match &send.recipients {
-                    Recipients::Inbox(_) => resolved.push(send.clone()),
+                    Recipients::Inbox(inbox) => {
+                        if seen_inboxes.insert(inbox.clone()) {
+                            resolved.push(send.clone());
+                        }
+                    }
                     Recipients::Followers(actor_id) => {
-                        let mut seen_inboxes = HashSet::new();
                         let recipients = {
                             let store = self
                                 .store
@@ -85,10 +89,14 @@ impl AppState {
                     }
                     Recipients::Actor(actor_id) => {
                         match self.actor_resolver.resolve(actor_id).await {
-                            Ok(actor) => resolved.push(SendActivity {
-                                activity: send.activity.clone(),
-                                recipients: Recipients::Inbox(actor.inbox),
-                            }),
+                            Ok(actor) => {
+                                if seen_inboxes.insert(actor.inbox.clone()) {
+                                    resolved.push(SendActivity {
+                                        activity: send.activity.clone(),
+                                        recipients: Recipients::Inbox(actor.inbox),
+                                    });
+                                }
+                            }
                             Err(error) if first_actor_resolve_error.is_none() => {
                                 first_actor_resolve_error = Some(error);
                             }
