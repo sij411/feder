@@ -7,22 +7,10 @@ Demo app using `feder-runtime-server` with one hardcoded local actor.
 Run
 ---
 
-On Unix shells:
+The example currently targets Linux:
 
 ~~~~ sh
 RUST_LOG=info cargo run -p single-user-server
-~~~~
-
-On PowerShell:
-
-~~~~ powershell
-$env:RUST_LOG = "info"; cargo run -p single-user-server
-~~~~
-
-On cmd.exe:
-
-~~~~ bat
-set RUST_LOG=info && cargo run -p single-user-server
 ~~~~
 
 The demo actor is:

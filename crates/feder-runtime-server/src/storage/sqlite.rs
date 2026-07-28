@@ -15,6 +15,12 @@
 
 use std::path::Path;
 
+#[cfg(unix)]
+use std::{
+    fs::OpenOptions,
+    os::unix::fs::{OpenOptionsExt, PermissionsExt},
+};
+
 use feder_core::{Action, Object, http_signatures::ActorKeyPair};
 use feder_vocab::{Actor, Iri, Note, Reference};
 use rusqlite::{Connection, OptionalExtension, params};
@@ -27,9 +33,15 @@ pub struct SqliteStore {
 
 impl SqliteStore {
     pub fn open(path: &Path) -> Result<Self, StoreError> {
+        #[cfg(unix)]
+        let database_file = prepare_database_file(path)?;
+
         let store = Self {
             conn: Connection::open(path)?,
         };
+
+        #[cfg(unix)]
+        drop(database_file);
 
         store.init()?;
 
@@ -73,6 +85,23 @@ impl SqliteStore {
 
         Ok(())
     }
+}
+
+#[cfg(unix)]
+fn prepare_database_file(path: &Path) -> Result<std::fs::File, std::io::Error> {
+    let file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .mode(0o600)
+        .open(path)?;
+
+    let mut permissions = file.metadata()?.permissions();
+    permissions.set_mode(0o600);
+    file.set_permissions(permissions)?;
+
+    Ok(file)
 }
 
 impl RuntimeStore for SqliteStore {
@@ -535,6 +564,67 @@ mod tests {
 
         drop(store);
         let _ = std::fs::remove_file(path);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn open_creates_database_with_owner_only_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp_dir = std::env::temp_dir().join(format!(
+            "feder-database-permissions-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system time after unix epoch")
+                .as_nanos()
+        ));
+        std::fs::create_dir(&temp_dir).expect("create temporary directory");
+        let path = temp_dir.join("store.sqlite3");
+
+        let store = SqliteStore::open(&path).expect("open SQLite store");
+
+        let mode = std::fs::metadata(&path)
+            .expect("read database metadata")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o600);
+
+        drop(store);
+        std::fs::remove_dir_all(temp_dir).expect("remove temporary directory");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn open_restricts_existing_database_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp_dir = std::env::temp_dir().join(format!(
+            "feder-existing-database-permissions-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system time after unix epoch")
+                .as_nanos()
+        ));
+        std::fs::create_dir(&temp_dir).expect("create temporary directory");
+        let path = temp_dir.join("store.sqlite3");
+        std::fs::write(&path, []).expect("create permissive database file");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644))
+            .expect("make database file permissive");
+
+        let store = SqliteStore::open(&path).expect("open SQLite store");
+
+        let mode = std::fs::metadata(&path)
+            .expect("read database metadata")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o600);
+
+        drop(store);
+        std::fs::remove_dir_all(temp_dir).expect("remove temporary directory");
     }
 
     #[test]

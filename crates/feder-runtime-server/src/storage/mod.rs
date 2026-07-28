@@ -39,6 +39,9 @@ pub struct StoredRecipient {
 
 #[derive(Debug, thiserror::Error)]
 pub enum StoreError {
+    #[error("I/O error")]
+    Io(#[from] std::io::Error),
+
     #[error("sqlite error")]
     Sqlite(#[from] rusqlite::Error),
 
