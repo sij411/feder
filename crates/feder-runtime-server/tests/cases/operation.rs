@@ -22,7 +22,7 @@ use feder_core::{Action, Object, Recipients, StoreFollower, UserCreateNote};
 use feder_runtime_server::{
     Error, actor::ActorResolveError, config::StorageConfig, send::SendError, storage::RuntimeStore,
 };
-use feder_vocab::{Actor, Iri, Reference};
+use feder_vocab::{Actor, Endpoints, Iri, Reference};
 use tokio::{sync::mpsc::error::TryRecvError, task::JoinHandle};
 
 use crate::common::{spawn_inbox_server, temporary_database_path, test_app_state, test_config};
@@ -46,12 +46,24 @@ fn create_note_input() -> UserCreateNote {
 }
 
 fn store_follower(state: &feder_runtime_server::AppState, remote_actor_id: &str, inbox: &str) {
+    store_follower_with_shared_inbox(state, remote_actor_id, inbox, None);
+}
+
+fn store_follower_with_shared_inbox(
+    state: &feder_runtime_server::AppState,
+    remote_actor_id: &str,
+    inbox: &str,
+    shared_inbox: Option<&str>,
+) {
     let remote_actor_id = iri(remote_actor_id);
-    let remote_actor = Actor::person(
+    let mut remote_actor = Actor::person(
         remote_actor_id.clone(),
         iri(inbox),
         iri(&format!("{remote_actor_id}/outbox")),
     );
+    remote_actor.endpoints = shared_inbox.map(|shared_inbox| Endpoints {
+        shared_inbox: Some(iri(shared_inbox)),
+    });
     state
         .store
         .lock()
@@ -168,27 +180,46 @@ async fn create_note_delivers_to_each_persisted_follower() {
 }
 
 #[tokio::test]
-async fn create_note_delivers_once_when_direct_actor_is_also_a_follower() {
-    let (inbox, mut requests, inbox_server) = spawn_inbox_server(StatusCode::ACCEPTED).await;
-    let (actor_id, _missing_actor_id, actor_server) = spawn_actor_server(&inbox).await;
+async fn create_note_delivers_once_to_shared_inbox_when_direct_actor_is_also_a_follower() {
+    let (personal_inbox, mut personal_requests, personal_inbox_server) =
+        spawn_inbox_server(StatusCode::ACCEPTED).await;
+    let (shared_inbox, mut shared_requests, shared_inbox_server) =
+        spawn_inbox_server(StatusCode::ACCEPTED).await;
+    let (actor_id, _missing_actor_id, actor_server) = spawn_actor_server(&personal_inbox).await;
     let state = test_app_state(test_config()).expect("build app state");
-    store_follower(&state, actor_id.as_str(), &inbox);
+    store_follower_with_shared_inbox(
+        &state,
+        actor_id.as_str(),
+        &personal_inbox,
+        Some(&shared_inbox),
+    );
     let mut input = create_note_input();
-    input.to = feder_vocab::References::one(
+    input.to = feder_vocab::References::one(actor_id);
+    input.cc = feder_vocab::References::one(
         state
             .local_actor
             .followers
             .clone()
             .expect("local actor has followers collection"),
     );
-    input.cc = feder_vocab::References::one(actor_id);
 
     state.create_note(input).await.expect("create note");
 
-    requests.recv().await.expect("receive Create delivery");
-    assert!(matches!(requests.try_recv(), Err(TryRecvError::Empty)));
+    shared_requests
+        .recv()
+        .await
+        .expect("receive shared inbox delivery");
+    assert!(matches!(
+        shared_requests.try_recv(),
+        Err(TryRecvError::Empty)
+    ));
+    assert!(matches!(
+        personal_requests.try_recv(),
+        Err(TryRecvError::Empty)
+    ));
     actor_server.abort();
-    inbox_server.abort();
+    shared_inbox_server.abort();
+    personal_inbox_server.abort();
 }
 
 #[tokio::test]

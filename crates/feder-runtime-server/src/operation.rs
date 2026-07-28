@@ -59,49 +59,66 @@ impl AppState {
     ) -> Result<(Vec<SendActivity>, Option<ActorResolveError>), Error> {
         let mut resolved = Vec::new();
         let mut first_actor_resolve_error = None;
+        let mut covered_actor_ids = HashSet::new();
         let mut seen_inboxes = HashSet::new();
 
+        // Expand followers first so direct recipients already covered by
+        // follower delivery are not also sent to their personal inbox.
         for action in actions {
-            if let Action::SendActivity(send) = action {
-                match &send.recipients {
-                    Recipients::Inbox(inbox) => {
-                        if seen_inboxes.insert(inbox.clone()) {
-                            resolved.push(send.clone());
-                        }
+            let Action::SendActivity(send) = action else {
+                continue;
+            };
+            let Recipients::Followers(actor_id) = &send.recipients else {
+                continue;
+            };
+            let recipients = {
+                let store = self
+                    .store
+                    .lock()
+                    .map_err(|_| Error::StorageStateUnavailable)?;
+                store.list_follower_recipients(actor_id)?
+            };
+            for recipient in recipients {
+                covered_actor_ids.insert(recipient.actor_id);
+                let inbox = recipient.shared_inbox.unwrap_or(recipient.inbox);
+                if seen_inboxes.insert(inbox.clone()) {
+                    resolved.push(SendActivity {
+                        activity: send.activity.clone(),
+                        recipients: Recipients::Inbox(inbox),
+                    });
+                }
+            }
+        }
+
+        for action in actions {
+            let Action::SendActivity(send) = action else {
+                continue;
+            };
+            match &send.recipients {
+                Recipients::Inbox(inbox) => {
+                    if seen_inboxes.insert(inbox.clone()) {
+                        resolved.push(send.clone());
                     }
-                    Recipients::Followers(actor_id) => {
-                        let recipients = {
-                            let store = self
-                                .store
-                                .lock()
-                                .map_err(|_| Error::StorageStateUnavailable)?;
-                            store.list_follower_recipients(actor_id)?
-                        };
-                        for recipient in recipients {
-                            let inbox = recipient.shared_inbox.unwrap_or(recipient.inbox);
-                            if seen_inboxes.insert(inbox.clone()) {
+                }
+                Recipients::Followers(_) => {}
+                Recipients::Actor(actor_id) => {
+                    if covered_actor_ids.contains(actor_id) {
+                        continue;
+                    }
+                    match self.actor_resolver.resolve(actor_id).await {
+                        Ok(actor) => {
+                            covered_actor_ids.insert(actor_id.clone());
+                            if seen_inboxes.insert(actor.inbox.clone()) {
                                 resolved.push(SendActivity {
                                     activity: send.activity.clone(),
-                                    recipients: Recipients::Inbox(inbox),
+                                    recipients: Recipients::Inbox(actor.inbox),
                                 });
                             }
                         }
-                    }
-                    Recipients::Actor(actor_id) => {
-                        match self.actor_resolver.resolve(actor_id).await {
-                            Ok(actor) => {
-                                if seen_inboxes.insert(actor.inbox.clone()) {
-                                    resolved.push(SendActivity {
-                                        activity: send.activity.clone(),
-                                        recipients: Recipients::Inbox(actor.inbox),
-                                    });
-                                }
-                            }
-                            Err(error) if first_actor_resolve_error.is_none() => {
-                                first_actor_resolve_error = Some(error);
-                            }
-                            Err(_) => {}
+                        Err(error) if first_actor_resolve_error.is_none() => {
+                            first_actor_resolve_error = Some(error);
                         }
+                        Err(_) => {}
                     }
                 }
             }
