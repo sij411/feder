@@ -15,8 +15,7 @@
 
 pub mod sqlite;
 
-use feder_core::{Decision, ReceivedFollowState};
-use feder_vocab::Follow;
+use feder_core::Action;
 use feder_vocab::Iri;
 pub use sqlite::SqliteStore;
 
@@ -45,19 +44,10 @@ pub enum StoreError {
 
     #[error("invalid IRI: {0}")]
     InvalidIri(String),
-
-    #[error("unsupported core decision value: {0}")]
-    UnsupportedDecisionValue(&'static str),
 }
 
 pub trait RuntimeStore {
-    fn apply_decision(&mut self, decision: &Decision) -> Result<(), StoreError>;
-
-    fn load_received_follow_state(
-        &self,
-        follow: &Follow,
-        local_actor_id: &Iri,
-    ) -> Result<ReceivedFollowState, StoreError>;
+    fn persist_actions(&mut self, actions: &[Action]) -> Result<(), StoreError>;
 
     fn list_followers(&self, actor_id: &Iri) -> Result<Vec<StoredFollower>, StoreError>;
 
