@@ -30,6 +30,7 @@ use feder_core::{
     http_signatures::{create_sha256_digest_header, verify_draft_cavage},
 };
 use feder_vocab::{Actor, Follow, Iri, Reference, Undo};
+use mime::Mime;
 use serde_json::{Value, from_slice, from_value};
 
 use crate::config::InboxAuthPolicy;
@@ -38,6 +39,7 @@ use crate::{Error, app::AppState};
 
 const MAX_SIGNATURE_AGE: Duration = Duration::from_secs(65 * 60);
 const MAX_CLOCK_SKEW: Duration = Duration::from_secs(60 * 60);
+const ACTIVITYPUB_CONTENT_TYPES: &[&str] = &["application/activity+json", "application/ld+json"];
 
 pub struct InboxRequest {
     pub username: String,
@@ -316,10 +318,10 @@ pub async fn inbox(
     let content_type = headers
         .get(CONTENT_TYPE)
         .and_then(|value| value.to_str().ok())
-        .unwrap_or("");
+        .and_then(|value| value.parse::<Mime>().ok());
 
-    if !content_type.starts_with("application/activity+json")
-        && !content_type.starts_with("application/ld+json")
+    if !content_type
+        .is_some_and(|media_type| ACTIVITYPUB_CONTENT_TYPES.contains(&media_type.essence_str()))
     {
         return Err(StatusCode::UNSUPPORTED_MEDIA_TYPE);
     }

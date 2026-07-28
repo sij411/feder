@@ -624,25 +624,58 @@ async fn rejects_unknown_inbox_actor() {
 
 #[tokio::test]
 async fn rejects_unsupported_content_type() {
-    let state = test_app_state(test_config()).expect("build app state");
-    let response = post_inbox(
-        router_with_state(state.clone()),
-        "/users/alice/inbox",
+    for content_type in [
         "application/json",
-        follow_body(),
-    )
-    .await;
+        "application/activity+jsonp",
+        "not a media type",
+    ] {
+        let state = test_app_state(test_config()).expect("build app state");
+        let response = post_inbox(
+            router_with_state(state.clone()),
+            "/users/alice/inbox",
+            content_type,
+            follow_body(),
+        )
+        .await;
 
-    assert_eq!(response.status(), StatusCode::UNSUPPORTED_MEDIA_TYPE);
-    assert!(
-        state
-            .core
-            .lock()
-            .expect("core lock")
-            .state()
-            .followers()
-            .is_empty()
-    );
+        assert_eq!(
+            response.status(),
+            StatusCode::UNSUPPORTED_MEDIA_TYPE,
+            "Content-Type: {content_type}"
+        );
+        assert!(
+            state
+                .core
+                .lock()
+                .expect("core lock")
+                .state()
+                .followers()
+                .is_empty()
+        );
+    }
+}
+
+#[tokio::test]
+async fn accepts_case_insensitive_content_type_with_parameters() {
+    for content_type in [
+        "Application/Activity+JSON; Charset=UTF-8",
+        "Application/LD+JSON; Profile=\"https://www.w3.org/ns/activitystreams\"",
+    ] {
+        let state = test_app_state(test_config()).expect("build app state");
+        let response = post_inbox(
+            router_with_state(state.clone()),
+            "/users/alice/inbox",
+            content_type,
+            "{not json",
+        )
+        .await;
+
+        assert_eq!(
+            response.status(),
+            StatusCode::BAD_REQUEST,
+            "Content-Type: {content_type}"
+        );
+    }
 }
 
 #[tokio::test]
