@@ -13,10 +13,17 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use axum::http::StatusCode;
+use axum::{
+    Json, Router,
+    http::{StatusCode, header},
+    routing::get,
+};
 use feder_core::{Action, Object, Recipients, StoreFollower, UserCreateNote};
-use feder_runtime_server::{Error, config::StorageConfig, send::SendError, storage::RuntimeStore};
+use feder_runtime_server::{
+    Error, actor::ActorResolveError, config::StorageConfig, send::SendError, storage::RuntimeStore,
+};
 use feder_vocab::{Actor, Iri, Reference};
+use tokio::task::JoinHandle;
 
 use crate::common::{spawn_inbox_server, temporary_database_path, test_app_state, test_config};
 
@@ -54,6 +61,39 @@ fn store_follower(state: &feder_runtime_server::AppState, remote_actor_id: &str,
             following: Reference::id(state.local_actor.id.clone()),
         })])
         .expect("persist follower");
+}
+
+async fn spawn_actor_server(inbox: &str) -> (Iri, Iri, JoinHandle<()>) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind actor server");
+    let address = listener.local_addr().expect("actor server address");
+    let actor_id = iri(&format!("http://{address}/users/bob"));
+    let missing_actor_id = iri(&format!("http://{address}/users/missing"));
+    let actor = Actor::person(
+        actor_id.clone(),
+        iri(inbox),
+        iri(&format!("http://{address}/users/bob/outbox")),
+    );
+    let app = Router::new().route(
+        "/users/bob",
+        get(move || {
+            let actor = actor.clone();
+            async move {
+                (
+                    [(header::CONTENT_TYPE, "application/activity+json")],
+                    Json(actor),
+                )
+            }
+        }),
+    );
+    let task = tokio::spawn(async move {
+        axum::serve(listener, app)
+            .await
+            .expect("serve actor endpoint");
+    });
+
+    (actor_id, missing_actor_id, task)
 }
 
 #[tokio::test]
@@ -125,6 +165,31 @@ async fn create_note_delivers_to_each_persisted_follower() {
     carol_requests.recv().await.expect("receive Carol delivery");
     bob_server.abort();
     carol_server.abort();
+}
+
+#[tokio::test]
+async fn create_note_delivers_to_resolvable_actor_when_another_actor_cannot_be_resolved() {
+    let (inbox, mut requests, inbox_server) = spawn_inbox_server(StatusCode::ACCEPTED).await;
+    let (actor_id, missing_actor_id, actor_server) = spawn_actor_server(&inbox).await;
+    let state = test_app_state(test_config()).expect("build app state");
+    let mut input = create_note_input();
+    input.to = feder_vocab::References::one(missing_actor_id);
+    input.cc = feder_vocab::References::one(actor_id);
+
+    let result = state.create_note(input).await;
+
+    assert!(matches!(
+        result,
+        Err(Error::ActorResolver(
+            ActorResolveError::UnsuccessfulStatus { .. }
+        ))
+    ));
+    requests
+        .recv()
+        .await
+        .expect("receive delivery for resolvable actor");
+    actor_server.abort();
+    inbox_server.abort();
 }
 
 #[tokio::test]

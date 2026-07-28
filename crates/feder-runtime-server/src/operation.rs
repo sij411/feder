@@ -17,13 +17,15 @@ use std::collections::HashSet;
 
 use feder_core::{Action, HandleResult, Input, Recipients, SendActivity, UserCreateNote};
 
-use crate::{Error, app::AppState, storage::RuntimeStore};
+use crate::{Error, actor::ActorResolveError, app::AppState, storage::RuntimeStore};
 
 impl AppState {
     /// Create, persist, and deliver a Note initiated by the local application.
     ///
-    /// Persistence occurs before delivery. If delivery fails, this returns an
-    /// error while the created Note remains available from the runtime store.
+    /// Persistence occurs before delivery. Recipient resolution and delivery
+    /// continue independently after individual failures. If any attempt fails,
+    /// this returns an error while the created Note remains available from the
+    /// runtime store and successful deliveries remain completed.
     pub async fn create_note(&self, input: UserCreateNote) -> Result<HandleResult, Error> {
         self.handle_input(Input::UserCreateNote(input)).await
     }
@@ -40,9 +42,13 @@ impl AppState {
                 .map_err(|_| Error::StorageStateUnavailable)?;
             store.persist_actions(&result.actions)?;
         };
-        let deliveries = self.resolve_outbound_deliveries(&result.actions).await?;
+        let (deliveries, actor_resolve_error) =
+            self.resolve_outbound_deliveries(&result.actions).await?;
 
         self.activity_sender.send_actions(&deliveries).await?;
+        if let Some(error) = actor_resolve_error {
+            return Err(error.into());
+        }
 
         Ok(result)
     }
@@ -50,8 +56,9 @@ impl AppState {
     async fn resolve_outbound_deliveries(
         &self,
         actions: &[Action],
-    ) -> Result<Vec<SendActivity>, Error> {
+    ) -> Result<(Vec<SendActivity>, Option<ActorResolveError>), Error> {
         let mut resolved = Vec::new();
+        let mut first_actor_resolve_error = None;
 
         for action in actions {
             if let Action::SendActivity(send) = action {
@@ -77,17 +84,21 @@ impl AppState {
                         }
                     }
                     Recipients::Actor(actor_id) => {
-                        let actor = self.actor_resolver.resolve(actor_id).await?;
-
-                        resolved.push(SendActivity {
-                            activity: send.activity.clone(),
-                            recipients: Recipients::Inbox(actor.inbox),
-                        })
+                        match self.actor_resolver.resolve(actor_id).await {
+                            Ok(actor) => resolved.push(SendActivity {
+                                activity: send.activity.clone(),
+                                recipients: Recipients::Inbox(actor.inbox),
+                            }),
+                            Err(error) if first_actor_resolve_error.is_none() => {
+                                first_actor_resolve_error = Some(error);
+                            }
+                            Err(_) => {}
+                        }
                     }
                 }
             }
         }
 
-        Ok(resolved)
+        Ok((resolved, first_actor_resolve_error))
     }
 }
