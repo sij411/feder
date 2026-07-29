@@ -784,6 +784,42 @@ async fn ignores_unsupported_activity_without_mutating_core() {
 }
 
 #[tokio::test]
+async fn ignores_undo_of_unsupported_activity_without_mutating_core() {
+    let state = test_app_state(test_config()).expect("build app state");
+    let body = serde_json::to_vec(&json!({
+        "@context": "https://www.w3.org/ns/activitystreams",
+        "type": "Undo",
+        "id": "https://remote.example/activities/undo-like-1",
+        "actor": "https://remote.example/users/bob",
+        "object": {
+            "type": "Like",
+            "id": "https://remote.example/activities/like-1",
+            "actor": "https://remote.example/users/bob",
+            "object": "http://127.0.0.1:3000/users/alice/notes/1"
+        }
+    }))
+    .expect("serialize Undo Like");
+    let response = post_inbox(
+        router_with_state(state.clone()),
+        "/users/alice/inbox",
+        "application/activity+json",
+        body,
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::ACCEPTED);
+    assert!(
+        state
+            .core
+            .lock()
+            .expect("core lock")
+            .state()
+            .followers()
+            .is_empty()
+    );
+}
+
+#[tokio::test]
 async fn rejects_oversized_inbox_body() {
     let response = post_inbox(
         test_router(test_config()).expect("build router"),

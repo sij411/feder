@@ -420,6 +420,14 @@ pub async fn inbox(
             Input::received_follow(follow, accept_id)
         }
         Some("Undo") => {
+            if value
+                .get("object")
+                .and_then(|object| object.get("type"))
+                .and_then(Value::as_str)
+                != Some("Follow")
+            {
+                return Ok(StatusCode::ACCEPTED.into_response());
+            }
             let undo: Undo = from_value(value).map_err(|_| StatusCode::BAD_REQUEST)?;
             let Reference::Object(follow) = &undo.object else {
                 return Ok(StatusCode::ACCEPTED.into_response());
