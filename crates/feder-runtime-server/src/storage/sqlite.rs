@@ -15,9 +15,15 @@
 
 use std::path::Path;
 
-use feder_core::Action;
-use feder_vocab::{Actor, Iri, Reference};
-use rusqlite::{Connection, params};
+#[cfg(unix)]
+use std::{
+    fs::OpenOptions,
+    os::unix::fs::{OpenOptionsExt, PermissionsExt},
+};
+
+use feder_core::{Action, Object, http_signatures::ActorKeyPair};
+use feder_vocab::{Actor, Iri, Note, Reference};
+use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::storage::{RuntimeStore, StoreError, StoredFollower, StoredRecipient};
 
@@ -27,9 +33,15 @@ pub struct SqliteStore {
 
 impl SqliteStore {
     pub fn open(path: &Path) -> Result<Self, StoreError> {
+        #[cfg(unix)]
+        let database_file = prepare_database_file(path)?;
+
         let store = Self {
             conn: Connection::open(path)?,
         };
+
+        #[cfg(unix)]
+        drop(database_file);
 
         store.init()?;
 
@@ -58,11 +70,38 @@ impl SqliteStore {
             );
             CREATE INDEX IF NOT EXISTS idx_followers_following_actor_id
                 ON followers (following_actor_id);
+            CREATE TABLE IF NOT EXISTS keys (
+                actor_id TEXT PRIMARY KEY NOT NULL,
+                private_key_pem TEXT NOT NULL,
+                public_key_pem TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS objects (
+                object_id TEXT PRIMARY KEY NOT NULL,
+                object_type TEXT NOT NULL,
+                object_json TEXT NOT NULL
+            );
             "#,
         )?;
 
         Ok(())
     }
+}
+
+#[cfg(unix)]
+fn prepare_database_file(path: &Path) -> Result<std::fs::File, std::io::Error> {
+    let file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .mode(0o600)
+        .open(path)?;
+
+    let mut permissions = file.metadata()?.permissions();
+    permissions.set_mode(0o600);
+    file.set_permissions(permissions)?;
+
+    Ok(file)
 }
 
 impl RuntimeStore for SqliteStore {
@@ -76,6 +115,7 @@ impl RuntimeStore for SqliteStore {
                     let following = actor_reference_id(&action.following);
                     let inbox = actor_reference_inbox(&action.follower);
                     let shared_inbox = actor_reference_shared_inbox(&action.follower);
+                    let refresh_actor = matches!(&action.follower, Reference::Object(_));
 
                     tx.execute(
                         r#"
@@ -87,28 +127,44 @@ impl RuntimeStore for SqliteStore {
                     )
                     VALUES (?1, ?2, ?3, ?4)
                     ON CONFLICT(follower_actor_id, following_actor_id) DO UPDATE SET
-                        inbox_url = COALESCE(excluded.inbox_url, followers.inbox_url),
-                        shared_inbox_url = COALESCE(
-                            excluded.shared_inbox_url,
-                            followers.shared_inbox_url
-                        )
+                        inbox_url = CASE
+                            WHEN ?5 THEN excluded.inbox_url
+                            ELSE followers.inbox_url
+                        END,
+                        shared_inbox_url = CASE
+                            WHEN ?5 THEN excluded.shared_inbox_url
+                            ELSE followers.shared_inbox_url
+                        END
                     "#,
                         params![
                             follower.as_str(),
                             following.as_str(),
                             inbox.map(|inbox| inbox.as_str()),
                             shared_inbox.map(|shared_inbox| shared_inbox.as_str()),
+                            refresh_actor,
                         ],
                     )?;
                 }
-                Action::StoreDeliveryTarget(action) => {
+                Action::RemoveFollower(action) => {
                     tx.execute(
                         r#"
-                        UPDATE followers
-                        SET inbox_url = ?2
-                        WHERE follower_actor_id = ?1
+                        DELETE FROM followers
+                        WHERE follower_actor_id = ?1 AND following_actor_id = ?2
                         "#,
-                        params![action.target.actor.as_str(), action.target.inbox.as_str()],
+                        params![action.follower.as_str(), action.following.as_str()],
+                    )?;
+                }
+                Action::StoreObject(action) => {
+                    let (object_id, object_type, object_json) = encode_object(&action.object)?;
+                    tx.execute(
+                        r#"
+                        INSERT INTO objects (object_id, object_type, object_json)
+                        VALUES (?1, ?2, ?3)
+                        ON CONFLICT(object_id) DO UPDATE SET
+                            object_type = excluded.object_type,
+                            object_json = excluded.object_json
+                        "#,
+                        params![object_id.as_str(), object_type, object_json],
                     )?;
                 }
                 _ => {}
@@ -178,6 +234,83 @@ impl RuntimeStore for SqliteStore {
         })
         .collect()
     }
+
+    fn load_object(&self, object_id: &Iri) -> Result<Option<Object>, StoreError> {
+        let stored = self
+            .conn
+            .query_row(
+                r#"
+                SELECT object_type, object_json
+                FROM objects
+                WHERE object_id = ?1
+                "#,
+                [object_id.as_str()],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+            )
+            .optional()?;
+
+        stored
+            .map(|(object_type, object_json)| decode_object(&object_type, &object_json))
+            .transpose()
+    }
+
+    fn insert_actor_key_pair(
+        &mut self,
+        actor_id: &Iri,
+        key_pair: &ActorKeyPair,
+    ) -> Result<(), StoreError> {
+        self.conn.execute(
+            r#"
+            INSERT INTO keys (actor_id, private_key_pem, public_key_pem)
+            VALUES (?1, ?2, ?3)
+            "#,
+            params![
+                actor_id.as_str(),
+                key_pair.private_key_pem(),
+                key_pair.public_key_pem(),
+            ],
+        )?;
+
+        Ok(())
+    }
+
+    fn load_actor_key_pair(&self, actor_id: &Iri) -> Result<Option<ActorKeyPair>, StoreError> {
+        let encoded_keys = self
+            .conn
+            .query_row(
+                r#"
+                SELECT private_key_pem, public_key_pem
+                FROM keys
+                WHERE actor_id = ?1
+                "#,
+                [actor_id.as_str()],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+            )
+            .optional()?;
+
+        encoded_keys
+            .map(|(private_key_pem, public_key_pem)| {
+                ActorKeyPair::from_pem(private_key_pem, public_key_pem)
+            })
+            .transpose()
+            .map_err(StoreError::from)
+    }
+}
+
+fn encode_object(object: &Object) -> Result<(&Iri, &'static str, String), StoreError> {
+    match object {
+        Object::Note(note) => Ok((&note.id, "Note", serde_json::to_string(note)?)),
+        _ => Err(StoreError::UnsupportedObjectType),
+    }
+}
+
+fn decode_object(object_type: &str, object_json: &str) -> Result<Object, StoreError> {
+    match object_type {
+        "Note" => Ok(Object::Note(serde_json::from_str::<Note>(object_json)?)),
+        object_type => Err(StoreError::UnsupportedStoredObjectType(
+            object_type.to_string(),
+        )),
+    }
 }
 
 fn actor_reference_id(reference: &Reference<Actor>) -> &Iri {
@@ -216,9 +349,12 @@ fn parse_optional_iri(value: Option<String>) -> Result<Option<Iri>, StoreError> 
 
 #[cfg(test)]
 mod tests {
-    use feder_core::{Action, StoreFollower};
+    use feder_core::{Action, Object, RemoveFollower, StoreFollower, StoreObject};
 
     use super::*;
+
+    const PRIVATE_KEY_PEM: &str = include_str!("../../tests/fixtures/rsa-private-key.pem");
+    const PUBLIC_KEY_PEM: &str = include_str!("../../tests/fixtures/rsa-public-key.pem");
 
     fn iri(value: &str) -> Iri {
         value.parse().expect("valid test IRI")
@@ -231,12 +367,27 @@ mod tests {
         })
     }
 
+    fn store_note_action(content: &str) -> Action {
+        let mut note = Note::new(iri("https://example.com/users/alice/posts/1"));
+        note.attributed_to = Some(Reference::id(iri("https://example.com/users/alice")));
+        note.content = Some(content.to_string());
+
+        Action::StoreObject(StoreObject {
+            object: Object::Note(note),
+        })
+    }
+
     fn actor(id: &str) -> Actor {
         Actor::person(
             iri(id),
             iri(&format!("{id}/inbox")),
             iri(&format!("{id}/outbox")),
         )
+    }
+
+    fn actor_key_pair() -> ActorKeyPair {
+        ActorKeyPair::from_pem(PRIVATE_KEY_PEM.to_string(), PUBLIC_KEY_PEM.to_string())
+            .expect("valid actor key pair fixture")
     }
 
     #[test]
@@ -283,6 +434,297 @@ mod tests {
     }
 
     #[test]
+    fn open_in_memory_initializes_keys_table() {
+        let store = SqliteStore::open_in_memory().expect("open in-memory store");
+
+        let columns: Vec<String> = {
+            let mut stmt = store
+                .conn
+                .prepare("PRAGMA table_info(keys)")
+                .expect("prepare keys table info query");
+            stmt.query_map([], |row| row.get("name"))
+                .expect("query keys table info")
+                .collect::<Result<_, _>>()
+                .expect("collect keys table columns")
+        };
+
+        assert_eq!(
+            columns,
+            vec![
+                "actor_id".to_string(),
+                "private_key_pem".to_string(),
+                "public_key_pem".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn open_in_memory_initializes_objects_table() {
+        let store = SqliteStore::open_in_memory().expect("open in-memory store");
+
+        let columns: Vec<String> = {
+            let mut stmt = store
+                .conn
+                .prepare("PRAGMA table_info(objects)")
+                .expect("prepare objects table info query");
+            stmt.query_map([], |row| row.get("name"))
+                .expect("query objects table info")
+                .collect::<Result<_, _>>()
+                .expect("collect objects table columns")
+        };
+
+        assert_eq!(
+            columns,
+            vec![
+                "object_id".to_string(),
+                "object_type".to_string(),
+                "object_json".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn persist_actions_stores_and_loads_note() {
+        let mut store = SqliteStore::open_in_memory().expect("open in-memory store");
+        let action = store_note_action("Hello from Feder.");
+
+        store
+            .persist_actions(core::slice::from_ref(&action))
+            .expect("persist note action");
+        let object = store
+            .load_object(&iri("https://example.com/users/alice/posts/1"))
+            .expect("load note")
+            .expect("stored note");
+
+        let Action::StoreObject(expected) = action else {
+            panic!("expected store object action");
+        };
+        assert_eq!(object, expected.object);
+    }
+
+    #[test]
+    fn persist_actions_replaces_object_with_same_id() {
+        let mut store = SqliteStore::open_in_memory().expect("open in-memory store");
+
+        store
+            .persist_actions(&[store_note_action("Original")])
+            .expect("persist original note");
+        store
+            .persist_actions(&[store_note_action("Updated")])
+            .expect("replace note");
+
+        let object = store
+            .load_object(&iri("https://example.com/users/alice/posts/1"))
+            .expect("load note")
+            .expect("stored note");
+        let Object::Note(note) = object else {
+            panic!("expected stored note");
+        };
+        assert_eq!(note.content.as_deref(), Some("Updated"));
+    }
+
+    #[test]
+    fn load_object_returns_none_for_unknown_id() {
+        let store = SqliteStore::open_in_memory().expect("open in-memory store");
+
+        let object = store
+            .load_object(&iri("https://example.com/users/alice/posts/unknown"))
+            .expect("load unknown object");
+
+        assert!(object.is_none());
+    }
+
+    #[test]
+    fn stored_note_persists_across_store_reopen() {
+        let path = std::env::temp_dir().join(format!(
+            "feder-object-test-{}-{}.sqlite3",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system time after unix epoch")
+                .as_nanos()
+        ));
+
+        {
+            let mut store = SqliteStore::open(&path).expect("open SQLite store");
+            store
+                .persist_actions(&[store_note_action("Persistent note")])
+                .expect("persist note action");
+        }
+
+        let store = SqliteStore::open(&path).expect("reopen SQLite store");
+        let object = store
+            .load_object(&iri("https://example.com/users/alice/posts/1"))
+            .expect("load persisted note")
+            .expect("persisted note");
+        let Object::Note(note) = object else {
+            panic!("expected stored note");
+        };
+        assert_eq!(note.content.as_deref(), Some("Persistent note"));
+
+        drop(store);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn open_creates_database_with_owner_only_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp_dir = std::env::temp_dir().join(format!(
+            "feder-database-permissions-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system time after unix epoch")
+                .as_nanos()
+        ));
+        std::fs::create_dir(&temp_dir).expect("create temporary directory");
+        let path = temp_dir.join("store.sqlite3");
+
+        let store = SqliteStore::open(&path).expect("open SQLite store");
+
+        let mode = std::fs::metadata(&path)
+            .expect("read database metadata")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o600);
+
+        drop(store);
+        std::fs::remove_dir_all(temp_dir).expect("remove temporary directory");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn open_restricts_existing_database_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp_dir = std::env::temp_dir().join(format!(
+            "feder-existing-database-permissions-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system time after unix epoch")
+                .as_nanos()
+        ));
+        std::fs::create_dir(&temp_dir).expect("create temporary directory");
+        let path = temp_dir.join("store.sqlite3");
+        std::fs::write(&path, []).expect("create permissive database file");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644))
+            .expect("make database file permissive");
+
+        let store = SqliteStore::open(&path).expect("open SQLite store");
+
+        let mode = std::fs::metadata(&path)
+            .expect("read database metadata")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o600);
+
+        drop(store);
+        std::fs::remove_dir_all(temp_dir).expect("remove temporary directory");
+    }
+
+    #[test]
+    fn actor_key_pair_roundtrips_for_actor() {
+        let mut store = SqliteStore::open_in_memory().expect("open in-memory store");
+        let actor_id = iri("https://example.com/users/alice");
+        let expected = actor_key_pair();
+
+        store
+            .insert_actor_key_pair(&actor_id, &expected)
+            .expect("insert actor key pair");
+        let actual = store
+            .load_actor_key_pair(&actor_id)
+            .expect("load actor key pair")
+            .expect("stored actor key pair");
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn actor_key_pair_persists_across_store_reopen() {
+        let path = std::env::temp_dir().join(format!(
+            "feder-actor-key-test-{}-{}.sqlite3",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system time after unix epoch")
+                .as_nanos()
+        ));
+        let actor_id = iri("https://example.com/users/alice");
+        let expected = actor_key_pair();
+
+        {
+            let mut store = SqliteStore::open(&path).expect("open SQLite store");
+            store
+                .insert_actor_key_pair(&actor_id, &expected)
+                .expect("insert actor key pair");
+        }
+
+        let store = SqliteStore::open(&path).expect("reopen SQLite store");
+        let actual = store
+            .load_actor_key_pair(&actor_id)
+            .expect("load actor key pair")
+            .expect("persisted actor key pair");
+
+        assert_eq!(actual, expected);
+
+        drop(store);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn load_actor_key_pair_returns_none_for_unknown_actor() {
+        let store = SqliteStore::open_in_memory().expect("open in-memory store");
+
+        let key_pair = store
+            .load_actor_key_pair(&iri("https://example.com/users/unknown"))
+            .expect("load actor key pair");
+
+        assert!(key_pair.is_none());
+    }
+
+    #[test]
+    fn load_actor_key_pair_rejects_invalid_stored_keys() {
+        let store = SqliteStore::open_in_memory().expect("open in-memory store");
+        store
+            .conn
+            .execute(
+                r#"
+                INSERT INTO keys (actor_id, private_key_pem, public_key_pem)
+                VALUES (?1, ?2, ?3)
+                "#,
+                params![
+                    "https://example.com/users/alice",
+                    "not a private key",
+                    PUBLIC_KEY_PEM,
+                ],
+            )
+            .expect("insert invalid actor key pair");
+
+        let result = store.load_actor_key_pair(&iri("https://example.com/users/alice"));
+
+        assert!(matches!(result, Err(StoreError::ActorKey(_))));
+    }
+
+    #[test]
+    fn insert_actor_key_pair_refuses_to_replace_existing_key() {
+        let mut store = SqliteStore::open_in_memory().expect("open in-memory store");
+        let actor_id = iri("https://example.com/users/alice");
+        let key_pair = actor_key_pair();
+
+        store
+            .insert_actor_key_pair(&actor_id, &key_pair)
+            .expect("insert actor key pair");
+        let result = store.insert_actor_key_pair(&actor_id, &key_pair);
+
+        assert!(matches!(result, Err(StoreError::Sqlite(_))));
+    }
+
+    #[test]
     fn persist_actions_stores_follower() {
         let mut store = SqliteStore::open_in_memory().expect("open in-memory store");
 
@@ -301,6 +743,27 @@ mod tests {
 
         assert_eq!(follower, "https://remote.example/users/bob");
         assert_eq!(following, "https://example.com/users/alice");
+    }
+
+    #[test]
+    fn persist_actions_removes_follower() {
+        let mut store = SqliteStore::open_in_memory().expect("open in-memory store");
+        store
+            .persist_actions(&[store_follower_action()])
+            .expect("persist follower action");
+
+        store
+            .persist_actions(&[Action::RemoveFollower(RemoveFollower {
+                follower: iri("https://remote.example/users/bob"),
+                following: iri("https://example.com/users/alice"),
+            })])
+            .expect("persist follower removal action");
+
+        let follower_count: i64 = store
+            .conn
+            .query_row("SELECT COUNT(*) FROM followers", [], |row| row.get(0))
+            .expect("query follower count");
+        assert_eq!(follower_count, 0);
     }
 
     #[test]
@@ -361,7 +824,7 @@ mod tests {
         let action = store_follower_action();
 
         store
-            .persist_actions(&[action.clone()])
+            .persist_actions(core::slice::from_ref(&action))
             .expect("persist follower action first time");
         store
             .persist_actions(&[action])
@@ -376,22 +839,20 @@ mod tests {
     }
 
     #[test]
-    fn persist_actions_updates_follower_inbox_from_delivery_target() {
+    fn persist_actions_updates_follower_inbox_from_repeated_follow() {
         let mut store = SqliteStore::open_in_memory().expect("open in-memory store");
 
         store
             .persist_actions(&[store_follower_action()])
             .expect("persist ID-only follower action");
+        let mut follower = actor("https://remote.example/users/bob");
+        follower.inbox = iri("https://remote.example/users/bob/updated-inbox");
         store
-            .persist_actions(&[Action::StoreDeliveryTarget(
-                feder_core::StoreDeliveryTarget {
-                    target: feder_core::DeliveryTarget {
-                        actor: iri("https://remote.example/users/bob"),
-                        inbox: iri("https://remote.example/users/bob/updated-inbox"),
-                    },
-                },
-            )])
-            .expect("persist delivery target action");
+            .persist_actions(&[Action::StoreFollower(StoreFollower {
+                follower: Reference::object(follower),
+                following: Reference::id(iri("https://example.com/users/alice")),
+            })])
+            .expect("persist repeated follower action");
 
         let recipients = store
             .list_follower_recipients(&iri("https://example.com/users/alice"))
@@ -403,6 +864,74 @@ mod tests {
                 actor_id: iri("https://remote.example/users/bob"),
                 inbox: iri("https://remote.example/users/bob/updated-inbox"),
                 shared_inbox: None,
+            }]
+        );
+    }
+
+    #[test]
+    fn persist_actions_clears_removed_shared_inbox_from_embedded_actor() {
+        let mut store = SqliteStore::open_in_memory().expect("open in-memory store");
+        let mut follower = actor("https://remote.example/users/bob");
+        follower.endpoints = Some(feder_vocab::Endpoints {
+            shared_inbox: Some(iri("https://remote.example/inbox")),
+        });
+        store
+            .persist_actions(&[Action::StoreFollower(StoreFollower {
+                follower: Reference::object(follower),
+                following: Reference::id(iri("https://example.com/users/alice")),
+            })])
+            .expect("persist follower with shared inbox");
+
+        let mut updated_follower = actor("https://remote.example/users/bob");
+        updated_follower.inbox = iri("https://remote.example/users/bob/updated-inbox");
+        store
+            .persist_actions(&[Action::StoreFollower(StoreFollower {
+                follower: Reference::object(updated_follower),
+                following: Reference::id(iri("https://example.com/users/alice")),
+            })])
+            .expect("persist follower without shared inbox");
+
+        let recipients = store
+            .list_follower_recipients(&iri("https://example.com/users/alice"))
+            .expect("list follower recipients");
+
+        assert_eq!(
+            recipients,
+            vec![StoredRecipient {
+                actor_id: iri("https://remote.example/users/bob"),
+                inbox: iri("https://remote.example/users/bob/updated-inbox"),
+                shared_inbox: None,
+            }]
+        );
+    }
+
+    #[test]
+    fn persist_actions_preserves_inboxes_from_id_only_repeated_follow() {
+        let mut store = SqliteStore::open_in_memory().expect("open in-memory store");
+        let mut follower = actor("https://remote.example/users/bob");
+        follower.endpoints = Some(feder_vocab::Endpoints {
+            shared_inbox: Some(iri("https://remote.example/inbox")),
+        });
+        store
+            .persist_actions(&[Action::StoreFollower(StoreFollower {
+                follower: Reference::object(follower),
+                following: Reference::id(iri("https://example.com/users/alice")),
+            })])
+            .expect("persist embedded follower");
+        store
+            .persist_actions(&[store_follower_action()])
+            .expect("persist ID-only repeated follower");
+
+        let recipients = store
+            .list_follower_recipients(&iri("https://example.com/users/alice"))
+            .expect("list follower recipients");
+
+        assert_eq!(
+            recipients,
+            vec![StoredRecipient {
+                actor_id: iri("https://remote.example/users/bob"),
+                inbox: iri("https://remote.example/users/bob/inbox"),
+                shared_inbox: Some(iri("https://remote.example/inbox")),
             }]
         );
     }

@@ -16,19 +16,31 @@
 use std::sync::{Arc, Mutex};
 
 use crate::Error;
+use crate::actor::ActorResolver;
 use crate::config::{InboxAuthPolicy, RuntimeConfig, StorageConfig};
-use crate::storage::SqliteStore;
+use crate::followers::followers;
+use crate::object::get_object;
+use crate::send::ActivitySender;
+use crate::storage::{RuntimeStore, SqliteStore};
 use crate::webfinger::webfinger;
 use crate::{actor::actor, inbox::inbox};
 use axum::routing::post;
 use axum::{Router, extract::DefaultBodyLimit, http::StatusCode, routing::get};
-use feder_core::{FederConfig, FederCore};
-use feder_vocab::Actor;
+use feder_core::{
+    FederConfig, FederCore,
+    http_signatures::{ActorKeyPair, generate_actor_key_pair},
+};
+use feder_vocab::{Actor, CryptographicKey, Reference};
+use iri_string::types::IriFragmentStr;
+use rand_core::OsRng;
 
 #[derive(Clone)]
 pub struct AppState {
     pub core: Arc<Mutex<FederCore>>,
     pub store: Arc<Mutex<SqliteStore>>,
+    pub actor_key_pair: Arc<ActorKeyPair>,
+    pub actor_resolver: ActorResolver,
+    pub activity_sender: ActivitySender,
     pub local_actor: Actor,
     pub username: String,
     pub handle_host: String,
@@ -40,16 +52,48 @@ impl AppState {
         let mut actor = Actor::person(config.actor_id, config.inbox, config.outbox);
         actor.preferred_username = Some(config.username.clone());
         actor.name = Some(config.username.clone());
+        actor.followers = Some(
+            format!("{}/followers", actor.id.as_str().trim_end_matches('/'))
+                .parse()
+                .expect("appending a followers path preserves a valid actor IRI"),
+        );
 
-        let core = FederCore::new(FederConfig::new(actor.clone()));
-        let store = match &config.storage {
+        let mut store = match &config.storage {
             StorageConfig::InMemory => SqliteStore::open_in_memory()?,
             StorageConfig::Sqlite { path } => SqliteStore::open(path)?,
         };
+        let actor_key_pair = match store.load_actor_key_pair(&actor.id)? {
+            Some(key_pair) => key_pair,
+            None => {
+                let key_pair = generate_actor_key_pair(&mut OsRng)?;
+                store.insert_actor_key_pair(&actor.id, &key_pair)?;
+                key_pair
+            }
+        };
+        let mut key_id = actor.id.clone();
+        key_id.set_fragment(Some(
+            IriFragmentStr::new("main-key").expect("main-key is a valid IRI fragment"),
+        ));
+        actor.set_public_key(Reference::object(CryptographicKey::new(
+            key_id.clone(),
+            actor.id.clone(),
+            actor_key_pair.public_key_pem().to_string(),
+        )));
+        let core = FederCore::new(FederConfig::new(actor.clone()));
+        let actor_key_pair = Arc::new(actor_key_pair);
+        let actor_resolver = ActorResolver::new(config.outbound_address_policy)?;
+        let activity_sender = ActivitySender::new(
+            actor_key_pair.clone(),
+            key_id.to_string(),
+            config.outbound_address_policy,
+        )?;
 
         Ok(Self {
             core: Arc::new(Mutex::new(core)),
             store: Arc::new(Mutex::new(store)),
+            actor_key_pair,
+            actor_resolver,
+            activity_sender,
             local_actor: actor,
             username: config.username,
             handle_host: config.handle_host,
@@ -61,43 +105,21 @@ impl AppState {
 pub fn build_router(config: RuntimeConfig) -> Result<Router, Error> {
     let state = AppState::from_config(config)?;
 
-    Ok(Router::new()
+    Ok(router_with_state(state))
+}
+
+pub fn router_with_state(state: AppState) -> Router {
+    Router::new()
         .route("/healthz", get(healthz))
         .route("/.well-known/webfinger", get(webfinger))
         .route("/users/{username}", get(actor))
+        .route("/users/{username}/followers", get(followers))
+        .route("/users/{username}/posts/{id}", get(get_object))
         .route("/users/{username}/inbox", post(inbox))
         .layer(DefaultBodyLimit::max(1_048_576))
-        .with_state(state))
+        .with_state(state)
 }
 
 async fn healthz() -> StatusCode {
     StatusCode::NO_CONTENT
-}
-
-#[cfg(test)]
-mod tests {
-    use axum::{
-        body::Body,
-        http::{Request, StatusCode},
-    };
-    use tower::ServiceExt;
-
-    use crate::{build_router, config::test_config};
-
-    #[tokio::test]
-    async fn returns_health_check() {
-        let app = build_router(test_config()).expect("build router");
-
-        let response = app
-            .oneshot(
-                Request::builder()
-                    .uri("/healthz")
-                    .body(Body::empty())
-                    .expect("valid request"),
-            )
-            .await
-            .expect("response");
-
-        assert_eq!(response.status(), StatusCode::NO_CONTENT);
-    }
 }

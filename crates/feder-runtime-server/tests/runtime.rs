@@ -13,21 +13,21 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-pub mod actor;
-pub mod app;
-pub mod config;
-pub mod error;
-pub mod followers;
-pub mod inbox;
-mod negotiation;
-pub mod object;
-mod operation;
-pub mod send;
-pub mod storage;
-mod url;
-pub mod webfinger;
+mod common;
 
-pub use actor::{ActorResolveError, ActorResolver};
-pub use app::{AppState, build_router};
-pub use config::{InboxAuthPolicy, OutboundAddressPolicy, RuntimeConfig, StorageConfig};
-pub use error::Error;
+#[path = "cases/actor.rs"]
+mod actor;
+#[path = "cases/app.rs"]
+mod app;
+#[path = "cases/followers.rs"]
+mod followers;
+#[path = "cases/inbox.rs"]
+mod inbox;
+#[path = "cases/object.rs"]
+mod object;
+#[path = "cases/operation.rs"]
+mod operation;
+#[path = "cases/send.rs"]
+mod send;
+#[path = "cases/webfinger.rs"]
+mod webfinger;

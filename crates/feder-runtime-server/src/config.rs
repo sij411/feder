@@ -23,6 +23,17 @@ pub enum InboxAuthPolicy {
     AllowUnsignedInsecureDev,
 }
 
+/// Controls which network addresses may receive outgoing activities.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum OutboundAddressPolicy {
+    /// Allows only publicly routable destination addresses.
+    #[default]
+    PublicOnly,
+
+    /// Allows private and special-use destinations. This disables SSRF protection.
+    AllowPrivateAddress,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum StorageConfig {
     InMemory,
@@ -37,25 +48,6 @@ pub struct RuntimeConfig {
     pub username: String,
     pub handle_host: String,
     pub inbox_auth_policy: InboxAuthPolicy,
+    pub outbound_address_policy: OutboundAddressPolicy,
     pub storage: StorageConfig,
-}
-
-#[cfg(test)]
-pub(crate) fn test_config() -> RuntimeConfig {
-    RuntimeConfig {
-        actor_id: "http://127.0.0.1:3000/users/alice"
-            .parse()
-            .expect("valid actor IRI"),
-        inbox: "http://127.0.0.1:3000/users/alice/inbox"
-            .parse()
-            .expect("valid inbox IRI"),
-        outbox: "http://127.0.0.1:3000/users/alice/outbox"
-            .parse()
-            .expect("valid outbox IRI"),
-        bind: "127.0.0.1:3000".parse().expect("valid bind address"),
-        username: "alice".to_string(),
-        handle_host: "127.0.0.1:3000".to_string(),
-        inbox_auth_policy: InboxAuthPolicy::AllowUnsignedInsecureDev,
-        storage: StorageConfig::InMemory,
-    }
 }

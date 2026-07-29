@@ -15,6 +15,12 @@
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+    #[error("runtime core state is unavailable")]
+    CoreStateUnavailable,
+
+    #[error("runtime storage state is unavailable")]
+    StorageStateUnavailable,
+
     #[error("failed to bind server socket")]
     Bind(#[source] std::io::Error),
 
@@ -23,4 +29,13 @@ pub enum Error {
 
     #[error("storage failed")]
     Storage(#[from] crate::storage::StoreError),
+
+    #[error("actor key generation failed")]
+    ActorKeyGeneration(#[from] feder_core::http_signatures::KeyError),
+
+    #[error("activity sending failed")]
+    ActivitySender(#[from] crate::send::SendError),
+
+    #[error("actor resolver setup failed")]
+    ActorResolver(#[from] crate::actor::ActorResolveError),
 }
