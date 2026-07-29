@@ -21,7 +21,11 @@ use std::{
 use axum::{
     body::Bytes,
     extract::{Path, State},
-    http::{HeaderMap, Method, StatusCode, Uri, header::CONTENT_TYPE},
+    http::{
+        HeaderMap, Method, StatusCode, Uri,
+        header::{CONTENT_TYPE, HOST},
+        uri::Authority,
+    },
     response::{IntoResponse, Response},
 };
 
@@ -116,6 +120,11 @@ async fn verify_signed_request(
         return Err(StatusCode::UNAUTHORIZED);
     }
 
+    verify_request_host(
+        &req.headers,
+        &app_state.handle_host,
+        app_state.local_actor.inbox.scheme_str(),
+    )?;
     verify_request_date(&req.headers)?;
     verify_request_digest(&req.headers, &req.body)?;
 
@@ -164,6 +173,55 @@ async fn verify_signed_request(
     }
 
     Ok(actor)
+}
+
+fn verify_request_host(
+    headers: &HeaderMap,
+    expected_host: &str,
+    inbox_scheme: &str,
+) -> Result<(), StatusCode> {
+    let signed_host = headers
+        .get(HOST)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse::<Authority>().ok())
+        .filter(|authority| !authority.as_str().contains('@'))
+        .ok_or(StatusCode::UNAUTHORIZED)?;
+    let expected_host = expected_host
+        .parse::<Authority>()
+        .ok()
+        .filter(|authority| !authority.as_str().contains('@'))
+        .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
+    let default_port = if inbox_scheme.eq_ignore_ascii_case("http") {
+        Some(80)
+    } else if inbox_scheme.eq_ignore_ascii_case("https") {
+        Some(443)
+    } else {
+        None
+    };
+    let signed_port = effective_port(&signed_host, default_port).ok_or(StatusCode::UNAUTHORIZED)?;
+    let expected_port =
+        effective_port(&expected_host, default_port).ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    if signed_host
+        .host()
+        .eq_ignore_ascii_case(expected_host.host())
+        && signed_port == expected_port
+    {
+        Ok(())
+    } else {
+        Err(StatusCode::UNAUTHORIZED)
+    }
+}
+
+fn effective_port(authority: &Authority, default_port: Option<u16>) -> Option<Option<u16>> {
+    let suffix = authority.as_str().get(authority.host().len()..)?;
+    if suffix.is_empty() {
+        Some(default_port)
+    } else if suffix.starts_with(':') {
+        authority.port_u16().map(Some)
+    } else {
+        None
+    }
 }
 
 fn activity_actor_id(value: &Value) -> Option<Iri> {
@@ -398,4 +456,39 @@ pub async fn inbox(
         })?;
 
     Ok(StatusCode::ACCEPTED.into_response())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::http::HeaderValue;
+
+    fn headers_with_host(host: &'static str) -> HeaderMap {
+        let mut headers = HeaderMap::new();
+        headers.insert(HOST, HeaderValue::from_static(host));
+        headers
+    }
+
+    #[test]
+    fn request_host_accepts_case_and_default_port_equivalence() {
+        assert_eq!(
+            verify_request_host(
+                &headers_with_host("EXAMPLE.COM:443"),
+                "example.com",
+                "https"
+            ),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn request_host_rejects_wrong_or_invalid_authorities() {
+        for host in ["other.example", "example.com:8443", "example.com:99999"] {
+            assert_eq!(
+                verify_request_host(&headers_with_host(host), "example.com", "https"),
+                Err(StatusCode::UNAUTHORIZED),
+                "Host: {host}"
+            );
+        }
+    }
 }

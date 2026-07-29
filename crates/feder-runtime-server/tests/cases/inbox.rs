@@ -206,9 +206,27 @@ async fn post_signed_inbox(
     signed_body: &[u8],
     delivered_body: impl Into<Body>,
 ) -> axum::response::Response {
+    post_signed_inbox_with_host(
+        app,
+        uri,
+        key_id,
+        signed_body,
+        delivered_body,
+        "127.0.0.1:3000",
+    )
+    .await
+}
+
+async fn post_signed_inbox_with_host(
+    app: Router,
+    uri: &str,
+    key_id: &str,
+    signed_body: &[u8],
+    delivered_body: impl Into<Body>,
+    host: &str,
+) -> axum::response::Response {
     let date = httpdate::fmt_http_date(std::time::SystemTime::now());
     let digest = create_sha256_digest_header(signed_body);
-    let host = "local.example";
     let headers = [
         ("content-type", "application/activity+json"),
         ("date", date.as_str()),
@@ -358,6 +376,36 @@ async fn verifies_signed_id_only_follow() {
         1
     );
     requests.recv().await.expect("receive Accept request");
+    actor_server.abort();
+}
+
+#[tokio::test]
+async fn signed_follow_rejects_host_for_another_authority() {
+    let (actor_id, _requests, actor_server) = spawn_actor_server().await;
+    let mut config = test_config();
+    config.inbox_auth_policy = InboxAuthPolicy::RequireSigned;
+    let state = test_app_state(config).expect("build app state");
+    let body = id_only_follow_body(&actor_id);
+    let response = post_signed_inbox_with_host(
+        router_with_state(state.clone()),
+        "/users/alice/inbox",
+        &format!("{actor_id}#main-key"),
+        &body,
+        body.clone(),
+        "other.example",
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    assert!(
+        state
+            .core
+            .lock()
+            .expect("core lock")
+            .state()
+            .followers()
+            .is_empty()
+    );
     actor_server.abort();
 }
 
