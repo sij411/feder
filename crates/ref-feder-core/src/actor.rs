@@ -13,16 +13,17 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-//! Experimental reference implementation of Feder's protocol core.
-//!
-//! This crate develops the replacement architecture alongside `feder-core`.
-//! Its API is intentionally unstable until the core ownership boundary has
-//! been proven against the existing runtime and Federog.
-#![no_std]
+use feder_vocab::Actor;
 
-pub use feder_vocab as vocab;
+pub trait ActorProvider {
+    type Error;
 
-pub mod actor;
+    fn find_actor(&self, identifier: &str) -> Result<Option<Actor>, Self::Error>;
+}
 
-#[derive(Debug, Default)]
-pub struct FederCore;
+pub fn find_actor<R>(runtime: &R, identifier: &str) -> Result<Option<Actor>, R::Error>
+where
+    R: ActorProvider,
+{
+    runtime.find_actor(identifier)
+}

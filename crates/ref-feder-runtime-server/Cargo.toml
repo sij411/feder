@@ -10,7 +10,11 @@ homepage.workspace = true
 repository.workspace = true
 
 [dependencies]
+axum = "=0.8"
+feder-vocab.workspace = true
+mime = "0.3.17"
 ref-feder-core.workspace = true
+thiserror = "2.0.19"
 
 [lints]
 workspace = true

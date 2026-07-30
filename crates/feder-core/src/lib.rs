@@ -83,6 +83,7 @@ impl FederConfig {
 }
 
 /// In-memory state used by portable core flows.
+// FIXME: Massive heap growth detected.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FederState {
     local_actor: vocab::Actor,
