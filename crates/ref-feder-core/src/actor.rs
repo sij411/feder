@@ -15,15 +15,15 @@
 
 use feder_vocab::Actor;
 
-pub trait ActorProvider {
+pub trait ActorDispatcher {
     type Error;
 
-    fn find_actor(&self, identifier: &str) -> Result<Option<Actor>, Self::Error>;
+    fn get_actor(&self, identifier: &str) -> Result<Option<Actor>, Self::Error>;
 }
 
-pub fn find_actor<R>(runtime: &R, identifier: &str) -> Result<Option<Actor>, R::Error>
+pub fn get_actor<R>(runtime: &R, identifier: &str) -> Result<Option<Actor>, R::Error>
 where
-    R: ActorProvider,
+    R: ActorDispatcher,
 {
-    runtime.find_actor(identifier)
+    runtime.get_actor(identifier)
 }

@@ -22,10 +22,10 @@
 use std::sync::Arc;
 
 use axum::{Router, routing::get};
-use ref_feder_core::actor::ActorProvider;
+pub use ref_feder_core::actor::ActorDispatcher;
 
-mod negotiation;
 pub mod actor;
+mod negotiation;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -58,7 +58,7 @@ impl<A> FederServer<A> {
 
 pub fn build_router<A>(server: FederServer<A>) -> Router
 where
-    A: ActorProvider + Send + Sync + 'static,
+    A: ActorDispatcher + Send + Sync + 'static,
 {
     Router::new()
         .route("/users/{identifier}", get(actor::actor::<A>))

@@ -1,4 +1,9 @@
-use axum::{Json, extract::{Path, State}, http::{HeaderMap, StatusCode, header}, response::{IntoResponse, Response}};
+use axum::{
+    Json,
+    extract::{Path, State},
+    http::{HeaderMap, StatusCode, header},
+    response::{IntoResponse, Response},
+};
 use feder_vocab::Actor;
 // Feder: A portable ActivityPub core for many runtimes.
 // Copyright (C) 2026 Feder contributors
@@ -15,24 +20,18 @@ use feder_vocab::Actor;
 // You should have received a copy of the GNU Affero General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 //
-use ref_feder_core::actor::{
-    ActorProvider,
-    find_actor,
-};
+use ref_feder_core::actor::{ActorDispatcher, get_actor};
 
-use crate::{
-    FederServer,
-    negotiation::accepts_activitypub,
-};
+use crate::{FederServer, negotiation::accepts_activitypub};
 
-impl<A> ActorProvider for FederServer<A>
+impl<A> ActorDispatcher for FederServer<A>
 where
-    A: ActorProvider,
+    A: ActorDispatcher,
 {
     type Error = A::Error;
 
-    fn find_actor(&self, identifier: &str) -> Result<Option<Actor>, Self::Error> {
-        self.actors.find_actor(identifier)
+    fn get_actor(&self, identifier: &str) -> Result<Option<Actor>, Self::Error> {
+        self.actors.get_actor(identifier)
     }
 }
 
@@ -42,13 +41,13 @@ pub async fn actor<A>(
     headers: HeaderMap,
 ) -> Result<Response, StatusCode>
 where
-    A: ActorProvider,
+    A: ActorDispatcher,
 {
     if !accepts_activitypub(&headers) {
         return Ok(([(header::VARY, "Accept")], StatusCode::NOT_ACCEPTABLE).into_response());
     }
 
-    let actor = find_actor(&server, &identifier)
+    let actor = get_actor(&server, &identifier)
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
         .ok_or(StatusCode::NOT_FOUND)?;
 
