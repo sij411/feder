@@ -12,9 +12,12 @@ repository.workspace = true
 [dependencies]
 axum = "=0.8"
 feder-vocab.workspace = true
+httpdate = "1"
 mime = "0.3.17"
+percent-encoding = "2.3.2"
 ref-feder-core.workspace = true
 serde.workspace = true
+serde_json.workspace = true
 thiserror = "2.0.19"
 
 [lints]

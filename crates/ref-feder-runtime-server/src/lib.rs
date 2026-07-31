@@ -21,12 +21,19 @@
 
 use std::sync::Arc;
 
-use axum::{Router, routing::get};
-pub use ref_feder_core::actor::ActorDispatcher;
+use axum::{
+    Router,
+    extract::DefaultBodyLimit,
+    routing::{get, post},
+};
+pub use ref_feder_core::ActorDispatcher;
 
 pub mod actor;
+pub mod inbox;
 pub mod negotiation;
 pub mod webfinger;
+
+pub use inbox::{ActivitySender, FollowStore, InboxAuthPolicy, RemoteResolver};
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -37,32 +44,51 @@ pub enum Error {
     Serve(#[source] std::io::Error),
 }
 
-pub struct FederServer<A> {
-    actors: Arc<A>,
+pub struct FederServer<A, S> {
+    actors: A,
+    services: S,
+    inbox_auth_policy: InboxAuthPolicy,
 }
 
-impl<A> Clone for FederServer<A> {
-    fn clone(&self) -> Self {
+impl<A, S> FederServer<A, S> {
+    pub fn new(actors: A, services: S) -> Self {
         Self {
-            actors: Arc::clone(&self.actors),
+            actors,
+            services,
+            inbox_auth_policy: InboxAuthPolicy::RequireSigned,
         }
+    }
+
+    #[must_use]
+    pub fn with_inbox_auth_policy(mut self, inbox_auth_policy: InboxAuthPolicy) -> Self {
+        self.inbox_auth_policy = inbox_auth_policy;
+        self
+    }
+
+    pub(crate) fn actors(&self) -> &A {
+        &self.actors
+    }
+
+    pub(crate) fn services(&self) -> &S {
+        &self.services
+    }
+
+    pub(crate) fn inbox_auth_policy(&self) -> InboxAuthPolicy {
+        self.inbox_auth_policy
     }
 }
 
-impl<A> FederServer<A> {
-    pub fn new(actors: A) -> Self {
-        Self {
-            actors: Arc::new(actors),
-        }
-    }
-}
-
-pub fn build_router<A>(server: FederServer<A>) -> Router
+pub fn build_router<A, S>(server: FederServer<A, S>) -> Router
 where
     A: ActorDispatcher + Send + Sync + 'static,
+    S: ActivitySender + FollowStore + RemoteResolver + Send + Sync + 'static,
 {
+    let server = Arc::new(server);
+
     Router::new()
-        .route("/users/{identifier}", get(actor::actor::<A>))
-        .route("/.well-known/webfinger", get(webfinger::webfinger::<A>))
+        .route("/users/{identifier}", get(actor::actor::<A, S>))
+        .route("/.well-known/webfinger", get(webfinger::webfinger::<A, S>))
+        .route("/users/{identifier}/inbox", post(inbox::inbox::<A, S>))
+        .layer(DefaultBodyLimit::max(1_048_576))
         .with_state(server)
 }

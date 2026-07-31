@@ -23,9 +23,16 @@
 extern crate alloc;
 
 pub use feder_vocab as vocab;
+use feder_vocab::Actor;
 
-pub mod actor;
+pub mod follow;
 pub mod key;
 
 #[derive(Debug, Default)]
 pub struct FederCore;
+
+pub trait ActorDispatcher {
+    type Error;
+
+    fn get_actor(&self, identifier: &str) -> Result<Option<Actor>, Self::Error>;
+}

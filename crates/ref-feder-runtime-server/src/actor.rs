@@ -13,6 +13,8 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
+use std::sync::Arc;
+
 use axum::{
     Json,
     extract::{Path, State},
@@ -21,23 +23,23 @@ use axum::{
 };
 use feder_vocab::Actor;
 
-use ref_feder_core::actor::ActorDispatcher;
+use ref_feder_core::ActorDispatcher;
 
 use crate::{FederServer, negotiation::accepts_activitypub};
 
-impl<A> ActorDispatcher for FederServer<A>
+impl<A, S> ActorDispatcher for FederServer<A, S>
 where
     A: ActorDispatcher,
 {
     type Error = A::Error;
 
     fn get_actor(&self, identifier: &str) -> Result<Option<Actor>, Self::Error> {
-        self.actors.get_actor(identifier)
+        self.actors().get_actor(identifier)
     }
 }
 
-pub async fn actor<A>(
-    State(server): State<FederServer<A>>,
+pub async fn actor<A, S>(
+    State(server): State<Arc<FederServer<A, S>>>,
     Path(identifier): Path<String>,
     headers: HeaderMap,
 ) -> Result<Response, StatusCode>

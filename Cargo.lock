@@ -1129,6 +1129,7 @@ dependencies = [
 name = "ref-feder-core"
 version = "0.1.0"
 dependencies = [
+ "base64",
  "feder-vocab",
  "rsa",
  "zeroize",
@@ -1140,9 +1141,12 @@ version = "0.1.0"
 dependencies = [
  "axum",
  "feder-vocab",
+ "httpdate",
  "mime",
+ "percent-encoding",
  "ref-feder-core",
  "serde",
+ "serde_json",
  "thiserror",
 ]
 

@@ -13,6 +13,8 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
+use std::sync::Arc;
+
 use crate::FederServer;
 use axum::{
     Json,
@@ -20,7 +22,7 @@ use axum::{
     http::{HeaderMap, StatusCode, header},
     response::{IntoResponse, Response},
 };
-use ref_feder_core::actor::ActorDispatcher;
+use ref_feder_core::ActorDispatcher;
 use serde::{Deserialize, Serialize};
 
 #[derive(Deserialize)]
@@ -43,8 +45,8 @@ pub struct WebFingerResponse {
     links: Vec<WebFingerLink>,
 }
 
-pub async fn webfinger<A>(
-    State(server): State<FederServer<A>>,
+pub async fn webfinger<A, S>(
+    State(server): State<Arc<FederServer<A, S>>>,
     headers: HeaderMap,
     Query(query): Query<WebFingerQuery>,
 ) -> Result<Response, StatusCode>

@@ -1,6 +1,7 @@
 {
   "words": [
     "Feder",
-    "activitypub"
+    "activitypub",
+    "webfinger"
   ]
 }
