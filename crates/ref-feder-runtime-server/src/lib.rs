@@ -25,7 +25,8 @@ use axum::{Router, routing::get};
 pub use ref_feder_core::actor::ActorDispatcher;
 
 pub mod actor;
-mod negotiation;
+pub mod negotiation;
+pub mod webfinger;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -62,5 +63,6 @@ where
 {
     Router::new()
         .route("/users/{identifier}", get(actor::actor::<A>))
+        .route("/.well-known/webfinger", get(webfinger::webfinger::<A>))
         .with_state(server)
 }

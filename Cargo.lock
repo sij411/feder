@@ -1142,6 +1142,7 @@ dependencies = [
  "feder-vocab",
  "mime",
  "ref-feder-core",
+ "serde",
  "thiserror",
 ]
 
