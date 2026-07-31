@@ -20,10 +20,3 @@ pub trait ActorDispatcher {
 
     fn get_actor(&self, identifier: &str) -> Result<Option<Actor>, Self::Error>;
 }
-
-pub fn get_actor<R>(runtime: &R, identifier: &str) -> Result<Option<Actor>, R::Error>
-where
-    R: ActorDispatcher,
-{
-    runtime.get_actor(identifier)
-}

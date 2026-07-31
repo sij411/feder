@@ -1114,10 +1114,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "ref-actor-server"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "feder-vocab",
+ "ref-feder-runtime-server",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "ref-feder-core"
 version = "0.1.0"
 dependencies = [
  "feder-vocab",
+ "rsa",
+ "zeroize",
 ]
 
 [[package]]

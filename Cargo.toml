@@ -5,6 +5,7 @@ members = [
   "crates/feder-runtime-server",
   "crates/ref-feder-core",
   "crates/ref-feder-runtime-server",
+  "examples/ref-actor-server",
   "examples/single-user-server",
 ]
 resolver = "3"

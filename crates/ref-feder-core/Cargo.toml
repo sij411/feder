@@ -11,6 +11,8 @@ repository.workspace = true
 
 [dependencies]
 feder-vocab.workspace = true
+rsa.workspace = true
+zeroize.workspace = true
 
 [lints]
 workspace = true

@@ -20,9 +20,12 @@
 //! been proven against the existing runtime and Federog.
 #![no_std]
 
+extern crate alloc;
+
 pub use feder_vocab as vocab;
 
 pub mod actor;
+pub mod key;
 
 #[derive(Debug, Default)]
 pub struct FederCore;

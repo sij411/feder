@@ -1,10 +1,3 @@
-use axum::{
-    Json,
-    extract::{Path, State},
-    http::{HeaderMap, StatusCode, header},
-    response::{IntoResponse, Response},
-};
-use feder_vocab::Actor;
 // Feder: A portable ActivityPub core for many runtimes.
 // Copyright (C) 2026 Feder contributors
 //
@@ -19,8 +12,16 @@ use feder_vocab::Actor;
 //
 // You should have received a copy of the GNU Affero General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
-//
-use ref_feder_core::actor::{ActorDispatcher, get_actor};
+
+use axum::{
+    Json,
+    extract::{Path, State},
+    http::{HeaderMap, StatusCode, header},
+    response::{IntoResponse, Response},
+};
+use feder_vocab::Actor;
+
+use ref_feder_core::actor::ActorDispatcher;
 
 use crate::{FederServer, negotiation::accepts_activitypub};
 
@@ -47,7 +48,8 @@ where
         return Ok(([(header::VARY, "Accept")], StatusCode::NOT_ACCEPTABLE).into_response());
     }
 
-    let actor = get_actor(&server, &identifier)
+    let actor = server
+        .get_actor(&identifier)
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
         .ok_or(StatusCode::NOT_FOUND)?;
 
