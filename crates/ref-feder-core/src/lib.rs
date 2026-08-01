@@ -28,6 +28,7 @@ use feder_vocab::Actor;
 pub mod follow;
 pub mod key;
 pub mod storage;
+pub mod undo;
 
 #[derive(Debug, Default)]
 pub struct FederCore;
