@@ -1119,6 +1119,7 @@ version = "0.1.0"
 dependencies = [
  "axum",
  "feder-vocab",
+ "ref-feder-core",
  "ref-feder-runtime-server",
  "tokio",
  "tracing",

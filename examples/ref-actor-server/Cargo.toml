@@ -7,6 +7,7 @@ license.workspace = true
 [dependencies]
 axum = "0.8"
 feder-vocab.workspace = true
+ref-feder-core.workspace = true
 ref-feder-runtime-server = { path = "../../crates/ref-feder-runtime-server" }
 tokio = { version = "1", features = ["macros", "net", "rt-multi-thread"] }
 tracing = "0.1"

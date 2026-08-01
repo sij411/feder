@@ -15,7 +15,6 @@
 
 use std::{
     collections::{BTreeMap, HashSet},
-    future::Future,
     sync::Arc,
     time::{Duration, SystemTime},
 };
@@ -30,16 +29,17 @@ use axum::{
     },
     response::{IntoResponse, Response},
 };
-use feder_vocab::{Accept, Actor, CryptographicKey, Follow, Iri, Reference};
+use feder_vocab::{Actor, CryptographicKey, Follow, Iri, Reference};
 use mime::Mime;
 use ref_feder_core::{
     ActorDispatcher,
     follow::{FollowError, receive_follow},
     key::{create_sha256_digest_header, verify_draft_cavage},
+    storage::ServerStorage,
 };
 use serde_json::{Value, from_slice, from_value};
 
-use crate::FederServer;
+use crate::{ActorResolver, FederServer};
 
 const MAX_SIGNATURE_AGE: Duration = Duration::from_secs(65 * 60);
 const MAX_CLOCK_SKEW: Duration = Duration::from_secs(60 * 60);
@@ -53,37 +53,6 @@ pub enum InboxAuthPolicy {
     AllowUnsignedInsecureDev,
     #[default]
     RequireSigned,
-}
-
-pub trait FollowStore {
-    type Error;
-
-    fn store_follower(&self, follower: &Actor, following: &Iri) -> Result<(), Self::Error>;
-}
-
-pub trait RemoteResolver {
-    type Error;
-
-    fn resolve_actor<'a>(
-        &'a self,
-        actor_id: &'a Iri,
-    ) -> impl Future<Output = Result<Actor, Self::Error>> + Send + 'a;
-
-    fn resolve_key<'a>(
-        &'a self,
-        key_id: &'a Iri,
-    ) -> impl Future<Output = Result<CryptographicKey, Self::Error>> + Send + 'a;
-}
-
-pub trait ActivitySender {
-    type Error;
-
-    fn send_accept<'a>(
-        &'a self,
-        local_actor: &'a Actor,
-        accept: &'a Accept,
-        inbox: &'a Iri,
-    ) -> impl Future<Output = Result<(), Self::Error>> + Send + 'a;
 }
 
 struct InboxRequest {
@@ -103,7 +72,7 @@ pub async fn inbox<A, S>(
 ) -> Result<Response, StatusCode>
 where
     A: ActorDispatcher,
-    S: ActivitySender + FollowStore + RemoteResolver,
+    S: ServerStorage,
 {
     let local_actor = server
         .actors()
@@ -132,7 +101,7 @@ where
         InboxAuthPolicy::AllowUnsignedInsecureDev => None,
         InboxAuthPolicy::RequireSigned => Some(
             verify_signed_request(
-                server.services(),
+                server.resolver(),
                 &local_actor,
                 &request,
                 activity_actor_id.as_ref().ok_or(StatusCode::UNAUTHORIZED)?,
@@ -148,7 +117,7 @@ where
     let follow: Follow = from_value(value).map_err(|_| StatusCode::BAD_REQUEST)?;
     let remote_actor = match verified_actor {
         Some(actor) => actor,
-        None => resolve_follow_actor(server.services(), &follow).await?,
+        None => resolve_follow_actor(server.resolver(), &follow).await?,
     };
     let accept_id = accept_id_for_follow(&local_actor.id, &follow.id)?;
     let outcome = match receive_follow(&local_actor, &remote_actor, follow, accept_id) {
@@ -158,40 +127,49 @@ where
     };
 
     server
-        .services()
+        .storage()
         .store_follower(&outcome.follower, &outcome.following)
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let key_pair = server
+        .storage()
+        .load_actor_key_pair(&local_actor.id)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
+
     server
-        .services()
-        .send_accept(&local_actor, &outcome.accept, &outcome.recipient_inbox)
+        .sender()
+        .send_activity(
+            &local_actor,
+            &key_pair,
+            &outcome.accept,
+            &outcome.recipient_inbox,
+        )
         .await
         .map_err(|_| StatusCode::BAD_GATEWAY)?;
 
     Ok(StatusCode::ACCEPTED.into_response())
 }
 
-async fn resolve_follow_actor<S>(services: &S, follow: &Follow) -> Result<Actor, StatusCode>
-where
-    S: RemoteResolver,
-{
+async fn resolve_follow_actor(
+    resolver: &ActorResolver,
+    follow: &Follow,
+) -> Result<Actor, StatusCode> {
     match &follow.actor {
         Reference::Object(actor) => Ok((**actor).clone()),
-        Reference::Id(actor_id) => services
-            .resolve_actor(actor_id)
+        Reference::Id(actor_id) => resolver
+            .resolve(actor_id)
             .await
             .map_err(|_| StatusCode::BAD_GATEWAY),
     }
 }
 
-async fn verify_signed_request<S>(
-    services: &S,
+async fn verify_signed_request(
+    resolver: &ActorResolver,
     local_actor: &Actor,
     request: &InboxRequest,
     activity_actor_id: &Iri,
-) -> Result<Actor, StatusCode>
-where
-    S: RemoteResolver,
-{
+) -> Result<Actor, StatusCode> {
     let signature_header = request
         .headers
         .get("signature")
@@ -232,7 +210,7 @@ where
         .key_id
         .parse()
         .map_err(|_| StatusCode::UNAUTHORIZED)?;
-    let public_key = services
+    let public_key = resolver
         .resolve_key(&key_id)
         .await
         .map_err(|_| StatusCode::BAD_GATEWAY)?;
@@ -253,8 +231,8 @@ where
     )
     .map_err(|_| StatusCode::UNAUTHORIZED)?;
 
-    let actor = services
-        .resolve_actor(activity_actor_id)
+    let actor = resolver
+        .resolve(activity_actor_id)
         .await
         .map_err(|_| StatusCode::BAD_GATEWAY)?;
     if actor.id != *activity_actor_id || !actor_owns_key(&actor, &public_key) {

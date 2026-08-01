@@ -43,21 +43,27 @@ curl -i \
   -H 'Content-Type: application/activity+json' \
   --data-binary '{
     "@context": "https://www.w3.org/ns/activitystreams",
-    "id": "https://remote.example/activities/follow/1",
+    "id": "http://127.0.0.1:3000/remote/activities/follow/1",
     "type": "Follow",
     "actor": {
-      "id": "https://remote.example/users/bob",
+      "id": "http://127.0.0.1:3000/remote/users/bob",
       "type": "Person",
-      "inbox": "https://remote.example/users/bob/inbox",
-      "outbox": "https://remote.example/users/bob/outbox"
+      "inbox": "http://127.0.0.1:3000/remote-inbox",
+      "outbox": "http://127.0.0.1:3000/remote/users/bob/outbox"
     },
     "object": "http://127.0.0.1:3000/users/alice"
   }' \
   http://127.0.0.1:3000/users/alice/inbox
 ~~~~
 
-The endpoint stores the latest follower, records the generated `Accept`, and
-returns `202 Accepted`. These example adapters deliberately retain only their
-latest value, so repeated requests do not grow an in-memory protocol history.
-Unsigned inbox requests are enabled only for this local development example;
-`FederServer` requires signed requests by default.
+The endpoint stores the latest follower, loads Alice's key pair, and sends a
+signed `Accept` to the example's `/remote-inbox` recipient before returning
+`202 Accepted`. The recipient checks that the request has a `Signature` header
+and logs receipt of the activity.
+
+The example loads its actor key pair from the repository's test fixture and
+retains only that pair and the latest follower, so repeated requests do not
+grow an in-memory protocol history. The fixture key is public test data and
+must never be used for a real actor. Unsigned incoming requests and private
+outbound addresses are enabled only for this local development example;
+`FederServer` requires signed requests and public destinations by default.

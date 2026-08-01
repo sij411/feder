@@ -18,22 +18,28 @@
 //! This crate develops runtime orchestration against `ref-feder-core` while
 //! the production `feder-runtime-server` remains operational. Its API is
 //! intentionally unstable during the architecture refactoring.
+pub mod actor;
+pub mod config;
+pub mod inbox;
+pub mod negotiation;
+pub mod send;
+pub mod url;
+pub mod webfinger;
 
 use std::sync::Arc;
 
+pub use actor::{ActorResolveError, ActorResolver};
 use axum::{
     Router,
     extract::DefaultBodyLimit,
     routing::{get, post},
 };
+pub use config::OutboundAddressPolicy;
+pub use inbox::InboxAuthPolicy;
 pub use ref_feder_core::ActorDispatcher;
+use ref_feder_core::storage::ServerStorage;
 
-pub mod actor;
-pub mod inbox;
-pub mod negotiation;
-pub mod webfinger;
-
-pub use inbox::{ActivitySender, FollowStore, InboxAuthPolicy, RemoteResolver};
+use crate::send::{ActivitySender, SendError};
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -42,21 +48,51 @@ pub enum Error {
 
     #[error("server failed")]
     Serve(#[source] std::io::Error),
+
+    #[error("failed to construct activity sender")]
+    ActivitySender(#[from] SendError),
+
+    #[error("failed to construct actor resolver")]
+    ActorResolver(#[from] ActorResolveError),
 }
 
 pub struct FederServer<A, S> {
     actors: A,
-    services: S,
+    storage: S,
+    resolver: ActorResolver,
+    sender: ActivitySender,
     inbox_auth_policy: InboxAuthPolicy,
 }
 
 impl<A, S> FederServer<A, S> {
-    pub fn new(actors: A, services: S) -> Self {
-        Self {
+    pub fn new(actors: A, storage: S) -> Result<Self, Error> {
+        let policy = OutboundAddressPolicy::PublicOnly;
+        let resolver = ActorResolver::new(policy)?;
+        let sender = ActivitySender::new(policy)?;
+        Ok(Self {
             actors,
-            services,
+            storage,
+            resolver,
+            sender,
             inbox_auth_policy: InboxAuthPolicy::RequireSigned,
-        }
+        })
+    }
+
+    // for development
+    pub fn with_outbound_address_policy(
+        actors: A,
+        storage: S,
+        policy: OutboundAddressPolicy,
+    ) -> Result<Self, Error> {
+        let resolver = ActorResolver::new(policy)?;
+        let sender = ActivitySender::new(policy)?;
+        Ok(Self {
+            actors,
+            storage,
+            resolver,
+            sender,
+            inbox_auth_policy: InboxAuthPolicy::RequireSigned,
+        })
     }
 
     #[must_use]
@@ -69,8 +105,16 @@ impl<A, S> FederServer<A, S> {
         &self.actors
     }
 
-    pub(crate) fn services(&self) -> &S {
-        &self.services
+    pub(crate) fn storage(&self) -> &S {
+        &self.storage
+    }
+
+    pub(crate) fn resolver(&self) -> &ActorResolver {
+        &self.resolver
+    }
+
+    pub(crate) fn sender(&self) -> &ActivitySender {
+        &self.sender
     }
 
     pub(crate) fn inbox_auth_policy(&self) -> InboxAuthPolicy {
@@ -81,7 +125,7 @@ impl<A, S> FederServer<A, S> {
 pub fn build_router<A, S>(server: FederServer<A, S>) -> Router
 where
     A: ActorDispatcher + Send + Sync + 'static,
-    S: ActivitySender + FollowStore + RemoteResolver + Send + Sync + 'static,
+    S: ServerStorage + Send + Sync + 'static,
 {
     let server = Arc::new(server);
 

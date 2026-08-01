@@ -13,27 +13,12 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-//! Experimental reference implementation of Feder's protocol core.
-//!
-//! This crate develops the replacement architecture alongside `feder-core`.
-//! Its API is intentionally unstable until the core ownership boundary has
-//! been proven against the existing runtime and Federog.
-#![no_std]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum OutboundAddressPolicy {
+    /// Allows only publicly routable destination addresses.
+    #[default]
+    PublicOnly,
 
-extern crate alloc;
-
-pub use feder_vocab as vocab;
-use feder_vocab::Actor;
-
-pub mod follow;
-pub mod key;
-pub mod storage;
-
-#[derive(Debug, Default)]
-pub struct FederCore;
-
-pub trait ActorDispatcher {
-    type Error;
-
-    fn get_actor(&self, identifier: &str) -> Result<Option<Actor>, Self::Error>;
+    /// Allows private and special-use destinations. This disables SSRF protection.
+    AllowPrivateAddress,
 }

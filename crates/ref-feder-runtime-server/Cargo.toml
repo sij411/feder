@@ -16,9 +16,17 @@ httpdate = "1"
 mime = "0.3.17"
 percent-encoding = "2.3.2"
 ref-feder-core.workspace = true
+reqwest = {
+    version = "0.13.1",
+    default-features = false,
+    features = ["rustls"],
+}
 serde.workspace = true
 serde_json.workspace = true
 thiserror = "2.0.19"
+url = "2"
+ipnet = "2.11.0"
+tokio = { version = "1", features = ["net"] }
 
 [lints]
 workspace = true
