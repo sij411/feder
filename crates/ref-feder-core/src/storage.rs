@@ -23,4 +23,6 @@ pub trait ServerStorage {
     fn store_follower(&self, follower: &Actor, following: &Iri) -> Result<(), Self::Error>;
 
     fn load_actor_key_pair(&self, actor_id: &Iri) -> Result<Option<ActorKeyPair>, Self::Error>;
+
+    fn remove_follower(&self, follower: &Iri, following: &Iri) -> Result<(), Self::Error>;
 }

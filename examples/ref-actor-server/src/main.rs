@@ -78,6 +78,22 @@ impl ServerStorage for ExampleStorage {
     fn load_actor_key_pair(&self, actor_id: &Iri) -> Result<Option<ActorKeyPair>, Self::Error> {
         Ok((actor_id == &self.local_actor_id).then(|| self.actor_key_pair.clone()))
     }
+
+    fn remove_follower(&self, follower: &Iri, following: &Iri) -> Result<(), Self::Error> {
+        let mut latest_follower = self
+            .latest_follower
+            .lock()
+            .map_err(|_| ExampleStorageError("follower state lock poisoned"))?;
+        if latest_follower
+            .as_ref()
+            .is_some_and(|(stored_follower, stored_following)| {
+                stored_follower.id == *follower && stored_following == following
+            })
+        {
+            *latest_follower = None;
+        }
+        Ok(())
+    }
 }
 
 fn local_actor(key_pair: &ActorKeyPair) -> Actor {
