@@ -1142,12 +1142,16 @@ dependencies = [
  "axum",
  "feder-vocab",
  "httpdate",
+ "ipnet",
  "mime",
  "percent-encoding",
  "ref-feder-core",
+ "reqwest",
  "serde",
  "serde_json",
  "thiserror",
+ "tokio",
+ "url",
 ]
 
 [[package]]
