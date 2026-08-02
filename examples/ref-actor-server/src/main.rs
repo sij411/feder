@@ -32,7 +32,7 @@ use ref_feder_core::{
     follow::PendingFollow,
     key::ActorKeyPair,
     note::CreateNoteInput,
-    storage::{NoteStore, ServerStorage},
+    storage::{FollowerDeliveryStore, NoteStore, ServerStorage, Storage},
 };
 use ref_feder_runtime_server::{
     ActorDispatcher, Error, FederServer, InboxAuthPolicy, OutboundAddressPolicy,
@@ -87,9 +87,11 @@ impl ActorDispatcher for SingleActorDispatcher {
     }
 }
 
-impl ServerStorage for ExampleStorage {
+impl Storage for ExampleStorage {
     type Error = ExampleStorageError;
+}
 
+impl ServerStorage for ExampleStorage {
     fn store_follower(&self, follower: &Actor, following: &Iri) -> Result<(), Self::Error> {
         *self
             .latest_follower
@@ -196,8 +198,6 @@ impl ServerStorage for ExampleStorage {
 }
 
 impl NoteStore for ExampleStorage {
-    type Error = ExampleStorageError;
-
     fn store_note(&self, note: &Note) -> Result<(), Self::Error> {
         *self
             .latest_note
@@ -205,6 +205,20 @@ impl NoteStore for ExampleStorage {
             .map_err(|_| ExampleStorageError("Note state lock poisoned"))? = Some(note.clone());
         tracing::info!(note = %note.id, "stored Note");
         Ok(())
+    }
+}
+
+impl FollowerDeliveryStore for ExampleStorage {
+    fn list_follower_actors(&self, local_actor: &Iri) -> Result<Vec<Actor>, Self::Error> {
+        let latest_follower = self
+            .latest_follower
+            .lock()
+            .map_err(|_| ExampleStorageError("follower state lock poisoned"))?;
+        Ok(latest_follower
+            .as_ref()
+            .filter(|(_, following)| following == local_actor)
+            .map(|(follower, _)| vec![follower.clone()])
+            .unwrap_or_default())
     }
 }
 

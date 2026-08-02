@@ -146,8 +146,10 @@ curl -i -X POST http://127.0.0.1:3000/create-note
 
 The application supplies stable Note and Create activity IRIs plus the Note's
 content and addressing. Core constructs both values, and the runtime persists
-only the durable Note through `NoteStore`. Delivery of the transient Create
-activity is intentionally left for the next migration step.
+only the durable Note through `NoteStore`. It then expands the followers
+address through `FollowerDeliveryStore`, prefers shared inboxes, deduplicates
+destinations, and sends the transient Create activity with Alice's key. Send
+the earlier inbound Follow first to observe delivery to Bob's example inbox.
 
 The example loads its actor key pair from the repository's test fixture and
 retains only that pair, the latest follower, the latest outbound Follow, and

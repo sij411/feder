@@ -13,9 +13,18 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use alloc::string::String;
+use alloc::{string::String, vec::Vec};
 
 use feder_vocab::{Actor, Create, Iri, Note, Reference, References};
+
+pub const PUBLIC_COLLECTION: &str = "https://www.w3.org/ns/activitystreams#Public";
+
+/// A transient delivery intent derived from a Note's addressing fields.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum NoteRecipient {
+    Followers(Iri),
+    Actor(Iri),
+}
 
 /// Runtime-provided facts for constructing one local Note and Create activity.
 ///
@@ -41,6 +50,7 @@ pub struct CreateNoteInput {
 pub struct CreateNoteOutcome {
     pub note: Note,
     pub activity: Create<Note>,
+    pub recipients: Vec<NoteRecipient>,
 }
 
 #[must_use]
@@ -59,5 +69,31 @@ pub fn create_note(local_actor: &Actor, input: CreateNoteInput) -> CreateNoteOut
     activity.to = note.to.clone();
     activity.cc = note.cc.clone();
 
-    CreateNoteOutcome { note, activity }
+    let recipients = note_recipients(local_actor, &note);
+
+    CreateNoteOutcome {
+        note,
+        activity,
+        recipients,
+    }
+}
+
+fn note_recipients(local_actor: &Actor, note: &Note) -> Vec<NoteRecipient> {
+    let mut recipients = Vec::new();
+
+    for address in note.to.iter().chain(note.cc.iter()) {
+        let recipient = if address.as_str() == PUBLIC_COLLECTION || address == &local_actor.id {
+            continue;
+        } else if local_actor.followers.as_ref() == Some(address) {
+            NoteRecipient::Followers(local_actor.id.clone())
+        } else {
+            NoteRecipient::Actor(address.clone())
+        };
+
+        if !recipients.contains(&recipient) {
+            recipients.push(recipient);
+        }
+    }
+
+    recipients
 }

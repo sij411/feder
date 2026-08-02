@@ -13,21 +13,26 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use feder_vocab::Iri;
+use std::collections::HashSet;
+
+use feder_vocab::{Actor, Iri};
 use ref_feder_core::{
     ActorDispatcher,
-    note::{CreateNoteInput, CreateNoteOutcome, create_note},
-    storage::NoteStore,
+    note::{CreateNoteInput, CreateNoteOutcome, NoteRecipient, create_note},
+    storage::{FollowerDeliveryStore, NoteStore},
 };
 
-use crate::FederServer;
+use crate::{ActorResolveError, FederServer, send::SendError};
 
 impl<A, S> FederServer<A, S>
 where
     A: ActorDispatcher,
-    S: NoteStore,
+    S: FollowerDeliveryStore + NoteStore,
 {
-    /// Constructs and persists a local Note without retaining protocol state.
+    /// Constructs, persists, and delivers a local Note without retaining state.
+    ///
+    /// Persistence occurs before delivery. Every independent recipient is
+    /// attempted even if another resolution or delivery fails.
     pub async fn create_note(
         &self,
         local_actor_id: &Iri,
@@ -44,8 +49,96 @@ where
             .store_note(&outcome.note)
             .map_err(CreateNoteError::Storage)?;
 
-        Ok(outcome)
+        let (inboxes, actor_resolve_error) = self
+            .resolve_note_recipients(&outcome.recipients)
+            .await
+            .map_err(CreateNoteError::Storage)?;
+        if inboxes.is_empty() {
+            if let Some(error) = actor_resolve_error {
+                return Err(CreateNoteError::ActorResolver(error));
+            }
+            return Ok(outcome);
+        }
+
+        let key_pair = self
+            .storage()
+            .load_actor_key_pair(&local_actor.id)
+            .map_err(CreateNoteError::Storage)?
+            .ok_or_else(|| CreateNoteError::MissingActorKey(local_actor.id.clone()))?;
+        let mut first_send_error = None;
+        for inbox in inboxes {
+            if let Err(error) = self
+                .sender()
+                .send_activity(&local_actor, &key_pair, &outcome.activity, &inbox)
+                .await
+                && first_send_error.is_none()
+            {
+                first_send_error = Some(error);
+            }
+        }
+
+        if let Some(error) = first_send_error {
+            Err(CreateNoteError::ActivitySender(error))
+        } else if let Some(error) = actor_resolve_error {
+            Err(CreateNoteError::ActorResolver(error))
+        } else {
+            Ok(outcome)
+        }
     }
+
+    async fn resolve_note_recipients(
+        &self,
+        recipients: &[NoteRecipient],
+    ) -> Result<(Vec<Iri>, Option<ActorResolveError>), S::Error> {
+        let mut inboxes = Vec::new();
+        let mut covered_actor_ids = HashSet::new();
+        let mut seen_inboxes = HashSet::new();
+        let mut first_actor_resolve_error = None;
+
+        for recipient in recipients {
+            let NoteRecipient::Followers(local_actor_id) = recipient else {
+                continue;
+            };
+            for actor in self.storage().list_follower_actors(local_actor_id)? {
+                covered_actor_ids.insert(actor.id.clone());
+                let inbox = preferred_shared_inbox(&actor).clone();
+                if seen_inboxes.insert(inbox.clone()) {
+                    inboxes.push(inbox);
+                }
+            }
+        }
+
+        for recipient in recipients {
+            let NoteRecipient::Actor(actor_id) = recipient else {
+                continue;
+            };
+            if covered_actor_ids.contains(actor_id) {
+                continue;
+            }
+            match self.resolver().resolve(actor_id).await {
+                Ok(actor) => {
+                    covered_actor_ids.insert(actor.id.clone());
+                    if seen_inboxes.insert(actor.inbox.clone()) {
+                        inboxes.push(actor.inbox);
+                    }
+                }
+                Err(error) if first_actor_resolve_error.is_none() => {
+                    first_actor_resolve_error = Some(error);
+                }
+                Err(_) => {}
+            }
+        }
+
+        Ok((inboxes, first_actor_resolve_error))
+    }
+}
+
+fn preferred_shared_inbox(actor: &Actor) -> &Iri {
+    actor
+        .endpoints
+        .as_ref()
+        .and_then(|endpoints| endpoints.shared_inbox.as_ref())
+        .unwrap_or(&actor.inbox)
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -56,6 +149,15 @@ pub enum CreateNoteError<A, S> {
     #[error("local actor not found: {0}")]
     LocalActorNotFound(Iri),
 
-    #[error("note storage failed")]
+    #[error("note or follower storage failed")]
     Storage(S),
+
+    #[error("failed to resolve a Note recipient")]
+    ActorResolver(#[source] ActorResolveError),
+
+    #[error("local actor has no stored signing key: {0}")]
+    MissingActorKey(Iri),
+
+    #[error("failed to send Create activity")]
+    ActivitySender(#[source] SendError),
 }

@@ -19,9 +19,11 @@ use feder_vocab::{Actor, Iri, Note};
 
 use crate::{follow::PendingFollow, key::ActorKeyPair};
 
-pub trait ServerStorage {
+pub trait Storage {
     type Error;
+}
 
+pub trait ServerStorage: Storage {
     fn store_follower(&self, follower: &Actor, following: &Iri) -> Result<(), Self::Error>;
 
     fn load_actor_key_pair(&self, actor_id: &Iri) -> Result<Option<ActorKeyPair>, Self::Error>;
@@ -41,8 +43,10 @@ pub trait ServerStorage {
     fn confirm_pending_follow(&self, expected: &PendingFollow) -> Result<bool, Self::Error>;
 }
 
-pub trait NoteStore {
-    type Error;
-
+pub trait NoteStore: Storage {
     fn store_note(&self, note: &Note) -> Result<(), Self::Error>;
+}
+
+pub trait FollowerDeliveryStore: ServerStorage {
+    fn list_follower_actors(&self, local_actor: &Iri) -> Result<Vec<Actor>, Self::Error>;
 }
