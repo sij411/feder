@@ -20,3 +20,8 @@ zeroize = { workspace = true, optional = true }
 
 [lints]
 workspace = true
+
+[[test]]
+name = "key"
+path = "tests/key.rs"
+required-features = ["http-signatures"]

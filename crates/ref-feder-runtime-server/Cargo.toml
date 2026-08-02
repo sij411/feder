@@ -30,5 +30,9 @@ url = "2"
 ipnet = "2.11.0"
 tokio = { version = "1", features = ["net"] }
 
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "net", "rt-multi-thread", "sync"] }
+tower.workspace = true
+
 [lints]
 workspace = true
