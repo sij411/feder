@@ -31,4 +31,12 @@ pub trait ServerStorage {
     fn list_followers(&self, following: &Iri) -> Result<Vec<Iri>, Self::Error>;
 
     fn store_pending_follow(&self, follow: &PendingFollow) -> Result<(), Self::Error>;
+
+    fn load_pending_follow(
+        &self,
+        follow_activity: &Iri,
+    ) -> Result<Option<PendingFollow>, Self::Error>;
+
+    /// Confirm `expected` only if that exact relationship is still pending.
+    fn confirm_pending_follow(&self, expected: &PendingFollow) -> Result<bool, Self::Error>;
 }

@@ -50,7 +50,12 @@ struct ExampleStorage {
     local_actor_id: Iri,
     actor_key_pair: ActorKeyPair,
     latest_follower: Mutex<Option<(Actor, Iri)>>,
-    latest_pending_follow: Mutex<Option<PendingFollow>>,
+    latest_outbound_follow: Mutex<Option<OutboundFollowState>>,
+}
+
+enum OutboundFollowState {
+    Pending(PendingFollow),
+    Accepted(PendingFollow),
 }
 
 #[derive(Debug)]
@@ -124,10 +129,10 @@ impl ServerStorage for ExampleStorage {
 
     fn store_pending_follow(&self, follow: &PendingFollow) -> Result<(), Self::Error> {
         *self
-            .latest_pending_follow
+            .latest_outbound_follow
             .lock()
             .map_err(|_| ExampleStorageError("pending Follow state lock poisoned"))? =
-            Some(follow.clone());
+            Some(OutboundFollowState::Pending(follow.clone()));
         tracing::info!(
             local_actor = %follow.local_actor,
             remote_actor = %follow.remote_actor.id,
@@ -135,6 +140,52 @@ impl ServerStorage for ExampleStorage {
             "stored pending Follow"
         );
         Ok(())
+    }
+
+    fn load_pending_follow(
+        &self,
+        follow_activity: &Iri,
+    ) -> Result<Option<PendingFollow>, Self::Error> {
+        let outbound = self
+            .latest_outbound_follow
+            .lock()
+            .map_err(|_| ExampleStorageError("outbound Follow state lock poisoned"))?;
+        Ok(match outbound.as_ref() {
+            Some(OutboundFollowState::Pending(follow))
+                if follow.follow_activity == *follow_activity =>
+            {
+                Some(follow.clone())
+            }
+            Some(OutboundFollowState::Accepted(follow)) => {
+                tracing::debug!(
+                    follow_activity = %follow.follow_activity,
+                    "Follow is already accepted"
+                );
+                None
+            }
+            Some(OutboundFollowState::Pending(_)) | None => None,
+        })
+    }
+
+    fn confirm_pending_follow(&self, expected: &PendingFollow) -> Result<bool, Self::Error> {
+        let mut outbound = self
+            .latest_outbound_follow
+            .lock()
+            .map_err(|_| ExampleStorageError("outbound Follow state lock poisoned"))?;
+        let matches = matches!(
+            outbound.as_ref(),
+            Some(OutboundFollowState::Pending(follow)) if follow == expected
+        );
+        if matches {
+            *outbound = Some(OutboundFollowState::Accepted(expected.clone()));
+            tracing::info!(
+                local_actor = %expected.local_actor,
+                remote_actor = %expected.remote_actor.id,
+                follow_activity = %expected.follow_activity,
+                "confirmed pending Follow"
+            );
+        }
+        Ok(matches)
     }
 }
 
@@ -248,7 +299,7 @@ async fn main() -> Result<(), Error> {
         local_actor_id: actor.id.clone(),
         actor_key_pair,
         latest_follower: Mutex::new(None),
-        latest_pending_follow: Mutex::new(None),
+        latest_outbound_follow: Mutex::new(None),
     };
     let dispatcher = SingleActorDispatcher { actor };
     let server = Arc::new(

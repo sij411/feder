@@ -67,6 +67,34 @@ pub fn create_follow(
     }
 }
 
+pub fn receive_accept_follow(
+    local_actor: &Actor,
+    remote_actor: &Actor,
+    pending: &PendingFollow,
+    accept: Accept,
+) -> Result<(), AcceptFollowError> {
+    if pending.local_actor != local_actor.id {
+        return Err(AcceptFollowError::WrongLocalActor);
+    }
+    if pending.remote_actor.id != remote_actor.id || reference_id(&accept.actor) != &remote_actor.id
+    {
+        return Err(AcceptFollowError::WrongActor);
+    }
+    if follow_reference_id(&accept.object) != &pending.follow_activity {
+        return Err(AcceptFollowError::WrongFollow);
+    }
+    if let Reference::Object(follow) = &accept.object {
+        if reference_id(&follow.actor) != &local_actor.id {
+            return Err(AcceptFollowError::WrongFollowActor);
+        }
+        if reference_id(&follow.object) != &remote_actor.id {
+            return Err(AcceptFollowError::WrongFollowObject);
+        }
+    }
+
+    Ok(())
+}
+
 pub fn receive_follow(
     local_actor: &Actor,
     remote_actor: &Actor,
@@ -100,6 +128,42 @@ fn reference_id(reference: &Reference<Actor>) -> &Iri {
         Reference::Object(actor) => &actor.id,
     }
 }
+
+fn follow_reference_id(reference: &Reference<Follow>) -> &Iri {
+    match reference {
+        Reference::Id(id) => id,
+        Reference::Object(follow) => &follow.id,
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AcceptFollowError {
+    WrongActor,
+    WrongFollow,
+    WrongFollowActor,
+    WrongFollowObject,
+    WrongLocalActor,
+}
+
+impl fmt::Display for AcceptFollowError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::WrongActor => formatter.write_str("Accept actor does not match remote actor"),
+            Self::WrongFollow => formatter.write_str("Accept does not reference pending Follow"),
+            Self::WrongFollowActor => {
+                formatter.write_str("accepted Follow actor does not match local actor")
+            }
+            Self::WrongFollowObject => {
+                formatter.write_str("accepted Follow does not target remote actor")
+            }
+            Self::WrongLocalActor => {
+                formatter.write_str("pending Follow does not belong to local actor")
+            }
+        }
+    }
+}
+
+impl core::error::Error for AcceptFollowError {}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum FollowError {

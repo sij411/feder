@@ -29,11 +29,13 @@ use axum::{
     },
     response::{IntoResponse, Response},
 };
-use feder_vocab::{Actor, CryptographicKey, Follow, Iri, Reference, Undo};
+use feder_vocab::{Accept, Actor, CryptographicKey, Follow, Iri, Reference, Undo};
 use mime::Mime;
 use ref_feder_core::{
     ActorDispatcher,
-    follow::{FollowError, receive_follow},
+    follow::{
+        AcceptFollowError, FollowError, PendingFollow, receive_accept_follow, receive_follow,
+    },
     key::{create_sha256_digest_header, verify_draft_cavage},
     storage::ServerStorage,
     undo::{UndoFollowError, receive_undo_follow},
@@ -82,7 +84,7 @@ where
         .ok_or(StatusCode::NOT_FOUND)?;
     let (request, value) = parse_inbox_request(headers, method, uri, body)?;
 
-    receive_activity(&server, local_actor, request, value).await
+    receive_activity(&server, local_actor, request, value, None).await
 }
 
 pub async fn shared_inbox<A, S>(
@@ -97,7 +99,7 @@ where
     S: ServerStorage,
 {
     let (request, value) = parse_inbox_request(headers, method, uri, body)?;
-    let Some(target_id) = activity_target_id(&value) else {
+    let Some((target_id, pending_follow)) = shared_inbox_target(server.storage(), &value)? else {
         return Ok(StatusCode::ACCEPTED.into_response());
     };
     let Some(local_actor) = server
@@ -108,7 +110,7 @@ where
         return Ok(StatusCode::ACCEPTED.into_response());
     };
 
-    receive_activity(&server, local_actor, request, value).await
+    receive_activity(&server, local_actor, request, value, pending_follow).await
 }
 
 fn parse_inbox_request(
@@ -143,6 +145,7 @@ async fn receive_activity<A, S>(
     local_actor: Actor,
     request: InboxRequest,
     value: Value,
+    pending_follow: Option<PendingFollow>,
 ) -> Result<Response, StatusCode>
 where
     A: ActorDispatcher,
@@ -164,6 +167,43 @@ where
 
     match value.get("type").and_then(Value::as_str) {
         Some("Follow") => {}
+        Some("Accept") => {
+            let accept: Accept = from_value(value).map_err(|_| StatusCode::BAD_REQUEST)?;
+            let remote_actor = match verified_actor {
+                Some(actor) => actor,
+                None => resolve_actor_reference(server.resolver(), &accept.actor).await?,
+            };
+            let follow_activity = follow_reference_id(&accept.object);
+            let pending = match pending_follow {
+                Some(pending) if pending.follow_activity == *follow_activity => pending,
+                Some(_) => return Ok(StatusCode::ACCEPTED.into_response()),
+                None => match server
+                    .storage()
+                    .load_pending_follow(follow_activity)
+                    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+                {
+                    Some(pending) => pending,
+                    None => return Ok(StatusCode::ACCEPTED.into_response()),
+                },
+            };
+            match receive_accept_follow(&local_actor, &remote_actor, &pending, accept) {
+                Ok(_) => {}
+                Err(AcceptFollowError::WrongActor) => return Err(StatusCode::UNAUTHORIZED),
+                Err(
+                    AcceptFollowError::WrongFollow
+                    | AcceptFollowError::WrongFollowActor
+                    | AcceptFollowError::WrongFollowObject
+                    | AcceptFollowError::WrongLocalActor,
+                ) => return Ok(StatusCode::ACCEPTED.into_response()),
+            }
+
+            server
+                .storage()
+                .confirm_pending_follow(&pending)
+                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+            return Ok(StatusCode::ACCEPTED.into_response());
+        }
         Some("Undo") => {
             let undo: Undo = from_value(value).map_err(|_| StatusCode::BAD_REQUEST)?;
             let remote_actor = match verified_actor {
@@ -359,6 +399,44 @@ fn activity_target_id(value: &Value) -> Option<Iri> {
         .or_else(|| target.get("id").and_then(Value::as_str))?
         .parse()
         .ok()
+}
+
+fn shared_inbox_target<S>(
+    storage: &S,
+    value: &Value,
+) -> Result<Option<(Iri, Option<PendingFollow>)>, StatusCode>
+where
+    S: ServerStorage,
+{
+    if value.get("type").and_then(Value::as_str) == Some("Accept") {
+        let Some(follow_activity) = value.get("object").and_then(value_reference_id) else {
+            return Ok(None);
+        };
+        let pending = storage
+            .load_pending_follow(&follow_activity)
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        return Ok(pending.map(|pending| {
+            let local_actor = pending.local_actor.clone();
+            (local_actor, Some(pending))
+        }));
+    }
+
+    Ok(activity_target_id(value).map(|target| (target, None)))
+}
+
+fn value_reference_id(value: &Value) -> Option<Iri> {
+    value
+        .as_str()
+        .or_else(|| value.get("id").and_then(Value::as_str))?
+        .parse()
+        .ok()
+}
+
+fn follow_reference_id(reference: &Reference<Follow>) -> &Iri {
+    match reference {
+        Reference::Id(id) => id,
+        Reference::Object(follow) => &follow.id,
+    }
 }
 
 fn verify_request_host(headers: &HeaderMap, inbox: &Iri) -> Result<(), StatusCode> {

@@ -114,8 +114,32 @@ the activity and pending relationship, persists that relationship, loads
 Alice's key, and sends a signed Follow to Bob's inbox. The pending relationship
 is bounded to one entry in this example.
 
+Confirm that pending Follow with a linked `Accept` through the shared inbox:
+
+~~~~ sh
+curl -i \
+  -H 'Content-Type: application/activity+json' \
+  --data-binary '{
+    "@context": "https://www.w3.org/ns/activitystreams",
+    "id": "http://127.0.0.1:3000/remote/activities/accept/example",
+    "type": "Accept",
+    "actor": {
+      "id": "http://127.0.0.1:3000/remote/users/bob",
+      "type": "Person",
+      "inbox": "http://127.0.0.1:3000/remote-inbox",
+      "outbox": "http://127.0.0.1:3000/remote/users/bob/outbox"
+    },
+    "object": "http://127.0.0.1:3000/users/alice/activities/follow/example"
+  }' \
+  http://127.0.0.1:3000/inbox
+~~~~
+
+The shared inbox uses the linked Follow IRI to find Alice, core validates Bob
+against the pending relationship, and storage atomically changes that exact
+relationship from pending to accepted. Repeating the Accept is a safe no-op.
+
 The example loads its actor key pair from the repository's test fixture and
-retains only that pair, the latest follower, and the latest pending Follow, so
+retains only that pair, the latest follower, and the latest outbound Follow, so
 repeated requests do not grow an in-memory protocol history. The fixture key
 is public test data and must never be used for a real actor. Unsigned incoming
 requests and private outbound addresses are enabled only for this local
