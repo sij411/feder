@@ -91,6 +91,7 @@ impl ServerStorage for ExampleStorage {
             })
         {
             *latest_follower = None;
+            tracing::info!(%follower, %following, "removed follower");
         }
         Ok(())
     }

@@ -61,6 +61,34 @@ signed `Accept` to the example's `/remote-inbox` recipient before returning
 `202 Accepted`. The recipient checks that the request has a `Signature` header
 and logs receipt of the activity.
 
+Undo that Follow:
+
+~~~~ sh
+curl -i \
+  -H 'Content-Type: application/activity+json' \
+  --data-binary '{
+    "@context": "https://www.w3.org/ns/activitystreams",
+    "id": "http://127.0.0.1:3000/remote/activities/undo/1",
+    "type": "Undo",
+    "actor": {
+      "id": "http://127.0.0.1:3000/remote/users/bob",
+      "type": "Person",
+      "inbox": "http://127.0.0.1:3000/remote-inbox",
+      "outbox": "http://127.0.0.1:3000/remote/users/bob/outbox"
+    },
+    "object": {
+      "id": "http://127.0.0.1:3000/remote/activities/follow/1",
+      "type": "Follow",
+      "actor": "http://127.0.0.1:3000/remote/users/bob",
+      "object": "http://127.0.0.1:3000/users/alice"
+    }
+  }' \
+  http://127.0.0.1:3000/users/alice/inbox
+~~~~
+
+The endpoint validates that Bob owns the embedded Follow, removes the matching
+follower relationship, and returns `202 Accepted`. Repeating the Undo is safe.
+
 The example loads its actor key pair from the repository's test fixture and
 retains only that pair and the latest follower, so repeated requests do not
 grow an in-memory protocol history. The fixture key is public test data and

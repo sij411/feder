@@ -29,13 +29,14 @@ use axum::{
     },
     response::{IntoResponse, Response},
 };
-use feder_vocab::{Actor, CryptographicKey, Follow, Iri, Reference};
+use feder_vocab::{Actor, CryptographicKey, Follow, Iri, Reference, Undo};
 use mime::Mime;
 use ref_feder_core::{
     ActorDispatcher,
     follow::{FollowError, receive_follow},
     key::{create_sha256_digest_header, verify_draft_cavage},
     storage::ServerStorage,
+    undo::{UndoFollowError, receive_undo_follow},
 };
 use serde_json::{Value, from_slice, from_value};
 
@@ -110,14 +111,36 @@ where
         ),
     };
 
-    if value.get("type").and_then(Value::as_str) != Some("Follow") {
-        return Ok(StatusCode::ACCEPTED.into_response());
+    match value.get("type").and_then(Value::as_str) {
+        Some("Follow") => {}
+        Some("Undo") => {
+            let undo: Undo = from_value(value).map_err(|_| StatusCode::BAD_REQUEST)?;
+            let remote_actor = match verified_actor {
+                Some(actor) => actor,
+                None => resolve_actor_reference(server.resolver(), &undo.actor).await?,
+            };
+            let outcome = match receive_undo_follow(&local_actor, &remote_actor, undo) {
+                Ok(outcome) => outcome,
+                Err(UndoFollowError::LinkedFollow | UndoFollowError::WrongObject) => {
+                    return Ok(StatusCode::ACCEPTED.into_response());
+                }
+                Err(UndoFollowError::WrongActor) => return Err(StatusCode::UNAUTHORIZED),
+            };
+
+            server
+                .storage()
+                .remove_follower(&outcome.follower, &outcome.following)
+                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+            return Ok(StatusCode::ACCEPTED.into_response());
+        }
+        _ => return Ok(StatusCode::ACCEPTED.into_response()),
     }
 
     let follow: Follow = from_value(value).map_err(|_| StatusCode::BAD_REQUEST)?;
     let remote_actor = match verified_actor {
         Some(actor) => actor,
-        None => resolve_follow_actor(server.resolver(), &follow).await?,
+        None => resolve_actor_reference(server.resolver(), &follow.actor).await?,
     };
     let accept_id = accept_id_for_follow(&local_actor.id, &follow.id)?;
     let outcome = match receive_follow(&local_actor, &remote_actor, follow, accept_id) {
@@ -151,11 +174,11 @@ where
     Ok(StatusCode::ACCEPTED.into_response())
 }
 
-async fn resolve_follow_actor(
+async fn resolve_actor_reference(
     resolver: &ActorResolver,
-    follow: &Follow,
+    actor: &Reference<Actor>,
 ) -> Result<Actor, StatusCode> {
-    match &follow.actor {
+    match actor {
         Reference::Object(actor) => Ok((**actor).clone()),
         Reference::Id(actor_id) => resolver
             .resolve(actor_id)
