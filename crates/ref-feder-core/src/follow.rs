@@ -29,6 +29,44 @@ pub struct FollowOutcome {
     pub recipient_inbox: Iri,
 }
 
+/// A pending outbound Follow relationship for application-owned storage.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PendingFollow {
+    pub local_actor: Iri,
+    pub remote_actor: Actor,
+    pub follow_activity: Iri,
+}
+
+/// The transient result of creating one outbound Follow activity.
+///
+/// Core retains neither the activity nor its pending relationship. A runtime
+/// persists `relationship` before delivering `activity` to the remote actor.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CreateFollowOutcome {
+    pub relationship: PendingFollow,
+    pub activity: Follow,
+}
+
+#[must_use]
+pub fn create_follow(
+    local_actor: &Actor,
+    remote_actor: &Actor,
+    follow_id: Iri,
+) -> CreateFollowOutcome {
+    CreateFollowOutcome {
+        relationship: PendingFollow {
+            local_actor: local_actor.id.clone(),
+            remote_actor: remote_actor.clone(),
+            follow_activity: follow_id.clone(),
+        },
+        activity: Follow::new(
+            follow_id,
+            Reference::id(local_actor.id.clone()),
+            Reference::id(remote_actor.id.clone()),
+        ),
+    }
+}
+
 pub fn receive_follow(
     local_actor: &Actor,
     remote_actor: &Actor,

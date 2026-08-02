@@ -20,6 +20,7 @@
 //! intentionally unstable during the architecture refactoring.
 pub mod actor;
 pub mod config;
+pub mod follow;
 pub mod followers;
 pub mod inbox;
 pub mod negotiation;
@@ -128,8 +129,14 @@ where
     A: ActorDispatcher + Send + Sync + 'static,
     S: ServerStorage + Send + Sync + 'static,
 {
-    let server = Arc::new(server);
+    build_router_with_state(Arc::new(server))
+}
 
+pub fn build_router_with_state<A, S>(server: Arc<FederServer<A, S>>) -> Router
+where
+    A: ActorDispatcher + Send + Sync + 'static,
+    S: ServerStorage + Send + Sync + 'static,
+{
     Router::new()
         .route("/users/{identifier}", get(actor::actor::<A, S>))
         .route(

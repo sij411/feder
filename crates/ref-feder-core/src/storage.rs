@@ -17,7 +17,7 @@ use alloc::vec::Vec;
 
 use feder_vocab::{Actor, Iri};
 
-use crate::key::ActorKeyPair;
+use crate::{follow::PendingFollow, key::ActorKeyPair};
 
 pub trait ServerStorage {
     type Error;
@@ -29,4 +29,6 @@ pub trait ServerStorage {
     fn remove_follower(&self, follower: &Iri, following: &Iri) -> Result<(), Self::Error>;
 
     fn list_followers(&self, following: &Iri) -> Result<Vec<Iri>, Self::Error>;
+
+    fn store_pending_follow(&self, follow: &PendingFollow) -> Result<(), Self::Error>;
 }

@@ -13,21 +13,30 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use std::{convert::Infallible, fmt, net::SocketAddr, sync::Mutex};
+use std::{
+    convert::Infallible,
+    fmt,
+    net::SocketAddr,
+    sync::{Arc, Mutex},
+};
 
 use axum::{
+    Json,
     body::Bytes,
-    http::{HeaderMap, StatusCode},
-    routing::post,
+    http::{HeaderMap, StatusCode, header},
+    response::IntoResponse,
+    routing::{get, post},
 };
 use feder_vocab::{Actor, CryptographicKey, Endpoints, Iri, Reference};
-use ref_feder_core::{key::ActorKeyPair, storage::ServerStorage};
+use ref_feder_core::{follow::PendingFollow, key::ActorKeyPair, storage::ServerStorage};
 use ref_feder_runtime_server::{
-    ActorDispatcher, Error, FederServer, InboxAuthPolicy, OutboundAddressPolicy, build_router,
+    ActorDispatcher, Error, FederServer, InboxAuthPolicy, OutboundAddressPolicy,
+    build_router_with_state,
 };
 
 const IDENTIFIER: &str = "alice";
 const ORIGIN: &str = "http://127.0.0.1:3000";
+const REMOTE_ACTOR_ID: &str = "http://127.0.0.1:3000/remote/users/bob";
 const ACTOR_PRIVATE_KEY_PEM: &str =
     include_str!("../../../crates/feder-core/tests/fixtures/rsa-private-key.pem");
 const ACTOR_PUBLIC_KEY_PEM: &str =
@@ -41,6 +50,7 @@ struct ExampleStorage {
     local_actor_id: Iri,
     actor_key_pair: ActorKeyPair,
     latest_follower: Mutex<Option<(Actor, Iri)>>,
+    latest_pending_follow: Mutex<Option<PendingFollow>>,
 }
 
 #[derive(Debug)]
@@ -111,6 +121,21 @@ impl ServerStorage for ExampleStorage {
             .map(|(follower, _)| vec![follower.id.clone()])
             .unwrap_or_default())
     }
+
+    fn store_pending_follow(&self, follow: &PendingFollow) -> Result<(), Self::Error> {
+        *self
+            .latest_pending_follow
+            .lock()
+            .map_err(|_| ExampleStorageError("pending Follow state lock poisoned"))? =
+            Some(follow.clone());
+        tracing::info!(
+            local_actor = %follow.local_actor,
+            remote_actor = %follow.remote_actor.id,
+            follow_activity = %follow.follow_activity,
+            "stored pending Follow"
+        );
+        Ok(())
+    }
 }
 
 fn local_actor(key_pair: &ActorKeyPair) -> Actor {
@@ -148,13 +173,60 @@ fn local_actor(key_pair: &ActorKeyPair) -> Actor {
     actor
 }
 
+fn remote_actor() -> Actor {
+    let mut actor = Actor::person(
+        REMOTE_ACTOR_ID.parse().expect("valid remote actor IRI"),
+        format!("{ORIGIN}/remote-inbox")
+            .parse()
+            .expect("valid remote inbox IRI"),
+        format!("{REMOTE_ACTOR_ID}/outbox")
+            .parse()
+            .expect("valid remote outbox IRI"),
+    );
+    actor.preferred_username = Some("bob".to_string());
+    actor
+}
+
+async fn remote_actor_document() -> impl IntoResponse {
+    (
+        [(header::CONTENT_TYPE, "application/activity+json")],
+        Json(remote_actor()),
+    )
+}
+
 async fn remote_inbox(headers: HeaderMap, body: Bytes) -> StatusCode {
     if !headers.contains_key("signature") {
         return StatusCode::UNAUTHORIZED;
     }
 
-    tracing::info!(body_size = body.len(), "received signed Accept activity");
+    tracing::info!(body_size = body.len(), "received signed activity");
     StatusCode::ACCEPTED
+}
+
+type ExampleServer = FederServer<SingleActorDispatcher, ExampleStorage>;
+
+async fn send_example_follow(server: Arc<ExampleServer>) -> StatusCode {
+    let local_actor_id = format!("{ORIGIN}/users/{IDENTIFIER}")
+        .parse()
+        .expect("valid local actor IRI");
+    let remote_actor_id = REMOTE_ACTOR_ID.parse().expect("valid remote actor IRI");
+    let follow_id = format!("{ORIGIN}/users/{IDENTIFIER}/activities/follow/example")
+        .parse()
+        .expect("valid Follow activity IRI");
+
+    match server
+        .follow_actor(&local_actor_id, &remote_actor_id, follow_id)
+        .await
+    {
+        Ok(follow) => {
+            tracing::info!(follow = %follow.id, "sent Follow");
+            StatusCode::ACCEPTED
+        }
+        Err(error) => {
+            tracing::error!(%error, "failed to send Follow");
+            StatusCode::BAD_GATEWAY
+        }
+    }
 }
 
 #[tokio::main]
@@ -176,15 +248,25 @@ async fn main() -> Result<(), Error> {
         local_actor_id: actor.id.clone(),
         actor_key_pair,
         latest_follower: Mutex::new(None),
+        latest_pending_follow: Mutex::new(None),
     };
     let dispatcher = SingleActorDispatcher { actor };
-    let server = FederServer::with_outbound_address_policy(
-        dispatcher,
-        storage,
-        OutboundAddressPolicy::AllowPrivateAddress,
-    )?
-    .with_inbox_auth_policy(InboxAuthPolicy::AllowUnsignedInsecureDev);
-    let app = build_router(server).route("/remote-inbox", post(remote_inbox));
+    let server = Arc::new(
+        FederServer::with_outbound_address_policy(
+            dispatcher,
+            storage,
+            OutboundAddressPolicy::AllowPrivateAddress,
+        )?
+        .with_inbox_auth_policy(InboxAuthPolicy::AllowUnsignedInsecureDev),
+    );
+    let follow_server = Arc::clone(&server);
+    let app = build_router_with_state(server)
+        .route("/remote/users/bob", get(remote_actor_document))
+        .route("/remote-inbox", post(remote_inbox))
+        .route(
+            "/send-follow",
+            post(move || send_example_follow(Arc::clone(&follow_server))),
+        );
 
     tracing::info!(
         bind = %bind,

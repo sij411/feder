@@ -102,9 +102,22 @@ The endpoint returns an ActivityStreams `OrderedCollection`. Its
 `orderedItems` contains Bob after the Follow request and is empty after the
 Undo request.
 
+Send an outbound Follow from Alice to the example's remote Bob actor:
+
+~~~~ sh
+curl -i -X POST http://127.0.0.1:3000/send-follow
+~~~~
+
+The application supplies the local actor, remote actor, and activity IRIs to
+`FederServer::follow_actor()`. The runtime resolves Bob, asks core to construct
+the activity and pending relationship, persists that relationship, loads
+Alice's key, and sends a signed Follow to Bob's inbox. The pending relationship
+is bounded to one entry in this example.
+
 The example loads its actor key pair from the repository's test fixture and
-retains only that pair and the latest follower, so repeated requests do not
-grow an in-memory protocol history. The fixture key is public test data and
-must never be used for a real actor. Unsigned incoming requests and private
-outbound addresses are enabled only for this local development example;
-`FederServer` requires signed requests and public destinations by default.
+retains only that pair, the latest follower, and the latest pending Follow, so
+repeated requests do not grow an in-memory protocol history. The fixture key
+is public test data and must never be used for a real actor. Unsigned incoming
+requests and private outbound addresses are enabled only for this local
+development example; `FederServer` requires signed requests and public
+destinations by default.
