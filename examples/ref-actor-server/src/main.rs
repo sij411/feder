@@ -206,6 +206,17 @@ impl NoteStore for ExampleStorage {
         tracing::info!(note = %note.id, "stored Note");
         Ok(())
     }
+
+    fn load_note(&self, note_id: &Iri) -> Result<Option<Note>, Self::Error> {
+        let latest_note = self
+            .latest_note
+            .lock()
+            .map_err(|_| ExampleStorageError("Note state lock poisoned"))?;
+        Ok(latest_note
+            .as_ref()
+            .filter(|note| note.id == *note_id)
+            .cloned())
+    }
 }
 
 impl FollowerDeliveryStore for ExampleStorage {

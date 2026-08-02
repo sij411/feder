@@ -25,6 +25,7 @@ pub mod followers;
 pub mod inbox;
 pub mod negotiation;
 pub mod note;
+pub mod object;
 pub mod send;
 pub mod url;
 pub mod webfinger;
@@ -40,7 +41,7 @@ use axum::{
 pub use config::OutboundAddressPolicy;
 pub use inbox::InboxAuthPolicy;
 pub use ref_feder_core::ActorDispatcher;
-use ref_feder_core::storage::ServerStorage;
+use ref_feder_core::storage::{NoteStore, ServerStorage};
 
 use crate::send::{ActivitySender, SendError};
 
@@ -128,7 +129,7 @@ impl<A, S> FederServer<A, S> {
 pub fn build_router<A, S>(server: FederServer<A, S>) -> Router
 where
     A: ActorDispatcher + Send + Sync + 'static,
-    S: ServerStorage + Send + Sync + 'static,
+    S: NoteStore + ServerStorage + Send + Sync + 'static,
 {
     build_router_with_state(Arc::new(server))
 }
@@ -136,13 +137,17 @@ where
 pub fn build_router_with_state<A, S>(server: Arc<FederServer<A, S>>) -> Router
 where
     A: ActorDispatcher + Send + Sync + 'static,
-    S: ServerStorage + Send + Sync + 'static,
+    S: NoteStore + ServerStorage + Send + Sync + 'static,
 {
     Router::new()
         .route("/users/{identifier}", get(actor::actor::<A, S>))
         .route(
             "/users/{identifier}/followers",
             get(followers::followers::<A, S>),
+        )
+        .route(
+            "/users/{identifier}/posts/{post_id}",
+            get(object::note::<A, S>),
         )
         .route("/.well-known/webfinger", get(webfinger::webfinger::<A, S>))
         .route("/users/{identifier}/inbox", post(inbox::inbox::<A, S>))

@@ -151,6 +151,18 @@ address through `FollowerDeliveryStore`, prefers shared inboxes, deduplicates
 destinations, and sends the transient Create activity with Alice's key. Send
 the earlier inbound Follow first to observe delivery to Bob's example inbox.
 
+Fetch the persisted public Note:
+
+~~~~ sh
+curl -i \
+  -H 'Accept: application/activity+json' \
+  http://127.0.0.1:3000/users/alice/posts/example
+~~~~
+
+The endpoint derives the canonical Note IRI from Alice and `example`, loads it
+through `NoteStore`, verifies its public addressing in core, and returns the
+ActivityPub Note with `Vary: Accept`.
+
 The example loads its actor key pair from the repository's test fixture and
 retains only that pair, the latest follower, the latest outbound Follow, and
 the latest Note, so repeated requests do not grow an in-memory protocol

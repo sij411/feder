@@ -78,6 +78,14 @@ pub fn create_note(local_actor: &Actor, input: CreateNoteInput) -> CreateNoteOut
     }
 }
 
+#[must_use]
+pub fn is_public_note(note: &Note) -> bool {
+    note.to
+        .iter()
+        .chain(note.cc.iter())
+        .any(|recipient| recipient.as_str() == PUBLIC_COLLECTION)
+}
+
 fn note_recipients(local_actor: &Actor, note: &Note) -> Vec<NoteRecipient> {
     let mut recipients = Vec::new();
 

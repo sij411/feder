@@ -45,6 +45,8 @@ pub trait ServerStorage: Storage {
 
 pub trait NoteStore: Storage {
     fn store_note(&self, note: &Note) -> Result<(), Self::Error>;
+
+    fn load_note(&self, note_id: &Iri) -> Result<Option<Note>, Self::Error>;
 }
 
 pub trait FollowerDeliveryStore: ServerStorage {
