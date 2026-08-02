@@ -1541,7 +1541,10 @@ name = "single-user-server"
 version = "0.1.0"
 dependencies = [
  "axum",
- "feder-runtime-server",
+ "feder-vocab",
+ "rand_core 0.6.4",
+ "ref-feder-core",
+ "ref-feder-runtime-server",
  "tokio",
  "tracing",
  "tracing-subscriber",

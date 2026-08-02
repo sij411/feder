@@ -1,7 +1,8 @@
 Single-User Server Example
 ==========================
 
-Demo app using `feder-runtime-server` with one hardcoded local actor.
+Demo app using `ref-feder-runtime-server` with one hardcoded local actor and
+the built-in SQLite storage adapter.
 
 
 Run
@@ -12,6 +13,9 @@ The example currently targets Linux:
 ~~~~ sh
 RUST_LOG=info cargo run -p single-user-server
 ~~~~
+
+The server stores its actor signing identity, followers, outbound Follow
+state, and Notes in `feder.sqlite3`. Set `FEDER_DATABASE` to use another path.
 
 The demo actor is:
 
@@ -25,14 +29,17 @@ The server listens on:
 127.0.0.1:3000
 ~~~~
 
-Check the process:
+Fetch the actor document:
 
 ~~~~ sh
-curl -i http://127.0.0.1:3000/healthz
+curl -i \
+  -H 'Accept: application/activity+json' \
+  http://127.0.0.1:3000/users/alice
 ~~~~
 
-Expected response:
+Discover the actor through WebFinger:
 
-~~~~ text
-HTTP/1.1 204 No Content
+~~~~ sh
+curl -i \
+  'http://127.0.0.1:3000/.well-known/webfinger?resource=acct:alice@127.0.0.1:3000'
 ~~~~
