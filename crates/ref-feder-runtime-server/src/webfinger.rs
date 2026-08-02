@@ -19,7 +19,7 @@ use crate::FederServer;
 use axum::{
     Json,
     extract::{Query, State},
-    http::{HeaderMap, StatusCode, header},
+    http::{StatusCode, header},
     response::{IntoResponse, Response},
 };
 use ref_feder_core::ActorDispatcher;
@@ -47,7 +47,6 @@ pub struct WebFingerResponse {
 
 pub async fn webfinger<A, S>(
     State(server): State<Arc<FederServer<A, S>>>,
-    headers: HeaderMap,
     Query(query): Query<WebFingerQuery>,
 ) -> Result<Response, StatusCode>
 where
@@ -65,9 +64,7 @@ where
         return Err(StatusCode::BAD_REQUEST);
     }
 
-    let request_host = request_host(&headers).ok_or(StatusCode::BAD_REQUEST)?;
-
-    if !resource_host.eq_ignore_ascii_case(request_host) {
+    if !resource_host.eq_ignore_ascii_case(server.handle_host()) {
         return Err(StatusCode::NOT_FOUND);
     }
 
@@ -91,11 +88,4 @@ where
         }),
     )
         .into_response())
-}
-
-fn request_host(headers: &HeaderMap) -> Option<&str> {
-    headers
-        .get(header::HOST)
-        .and_then(|value| value.to_str().ok())
-        .filter(|value| !value.is_empty())
 }

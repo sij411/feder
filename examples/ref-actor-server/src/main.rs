@@ -41,6 +41,7 @@ use ref_feder_runtime_server::{
 
 const IDENTIFIER: &str = "alice";
 const ORIGIN: &str = "http://127.0.0.1:3000";
+const HANDLE_HOST: &str = "127.0.0.1:3000";
 const REMOTE_ACTOR_ID: &str = "http://127.0.0.1:3000/remote/users/bob";
 const ACTOR_PRIVATE_KEY_PEM: &str =
     include_str!("../../../crates/feder-core/tests/fixtures/rsa-private-key.pem");
@@ -399,6 +400,7 @@ async fn main() -> Result<(), Error> {
         FederServer::with_outbound_address_policy(
             dispatcher,
             storage,
+            HANDLE_HOST,
             OutboundAddressPolicy::AllowPrivateAddress,
         )?
         .with_inbox_auth_policy(InboxAuthPolicy::AllowUnsignedInsecureDev),

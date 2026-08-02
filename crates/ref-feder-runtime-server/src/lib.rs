@@ -63,19 +63,21 @@ pub enum Error {
 pub struct FederServer<A, S> {
     actors: A,
     storage: S,
+    handle_host: String,
     resolver: ActorResolver,
     sender: ActivitySender,
     inbox_auth_policy: InboxAuthPolicy,
 }
 
 impl<A, S> FederServer<A, S> {
-    pub fn new(actors: A, storage: S) -> Result<Self, Error> {
+    pub fn new(actors: A, storage: S, handle_host: impl Into<String>) -> Result<Self, Error> {
         let policy = OutboundAddressPolicy::PublicOnly;
         let resolver = ActorResolver::new(policy)?;
         let sender = ActivitySender::new(policy)?;
         Ok(Self {
             actors,
             storage,
+            handle_host: handle_host.into(),
             resolver,
             sender,
             inbox_auth_policy: InboxAuthPolicy::RequireSigned,
@@ -86,6 +88,7 @@ impl<A, S> FederServer<A, S> {
     pub fn with_outbound_address_policy(
         actors: A,
         storage: S,
+        handle_host: impl Into<String>,
         policy: OutboundAddressPolicy,
     ) -> Result<Self, Error> {
         let resolver = ActorResolver::new(policy)?;
@@ -93,6 +96,7 @@ impl<A, S> FederServer<A, S> {
         Ok(Self {
             actors,
             storage,
+            handle_host: handle_host.into(),
             resolver,
             sender,
             inbox_auth_policy: InboxAuthPolicy::RequireSigned,
@@ -111,6 +115,10 @@ impl<A, S> FederServer<A, S> {
 
     pub(crate) fn storage(&self) -> &S {
         &self.storage
+    }
+
+    pub(crate) fn handle_host(&self) -> &str {
+        &self.handle_host
     }
 
     pub(crate) fn resolver(&self) -> &ActorResolver {
