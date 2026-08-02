@@ -26,6 +26,7 @@ pub use feder_vocab as vocab;
 use feder_vocab::{Actor, Iri};
 
 pub mod follow;
+#[cfg(feature = "http-signatures")]
 pub mod key;
 pub mod note;
 pub mod storage;

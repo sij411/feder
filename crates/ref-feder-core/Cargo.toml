@@ -9,11 +9,14 @@ license.workspace = true
 homepage.workspace = true
 repository.workspace = true
 
+[features]
+http-signatures = ["dep:base64", "dep:rsa", "dep:zeroize"]
+
 [dependencies]
-base64.workspace = true
+base64 = { workspace = true, optional = true }
 feder-vocab.workspace = true
-rsa.workspace = true
-zeroize.workspace = true
+rsa = { workspace = true, optional = true }
+zeroize = { workspace = true, optional = true }
 
 [lints]
 workspace = true

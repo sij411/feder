@@ -17,7 +17,9 @@ use alloc::vec::Vec;
 
 use feder_vocab::{Actor, Iri, Note};
 
-use crate::{follow::PendingFollow, key::ActorKeyPair};
+use crate::follow::PendingFollow;
+#[cfg(feature = "http-signatures")]
+use crate::key::ActorKeyPair;
 
 pub trait Storage {
     type Error;
@@ -26,6 +28,7 @@ pub trait Storage {
 pub trait ServerStorage: Storage {
     fn store_follower(&self, follower: &Actor, following: &Iri) -> Result<(), Self::Error>;
 
+    #[cfg(feature = "http-signatures")]
     fn load_actor_key_pair(&self, actor_id: &Iri) -> Result<Option<ActorKeyPair>, Self::Error>;
 
     fn remove_follower(&self, follower: &Iri, following: &Iri) -> Result<(), Self::Error>;
