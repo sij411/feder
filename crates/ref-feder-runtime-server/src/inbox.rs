@@ -82,9 +82,10 @@ where
         .get_actor(&identifier)
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
         .ok_or(StatusCode::NOT_FOUND)?;
+    let expected_inbox = local_actor.inbox.clone();
     let (request, value) = parse_inbox_request(headers, method, uri, body)?;
 
-    receive_activity(&server, local_actor, request, value, None).await
+    receive_activity(&server, local_actor, expected_inbox, request, value, None).await
 }
 
 pub async fn shared_inbox<A, S>(
@@ -109,8 +110,23 @@ where
     else {
         return Ok(StatusCode::ACCEPTED.into_response());
     };
+    let Some(expected_inbox) = local_actor
+        .endpoints
+        .as_ref()
+        .and_then(|endpoints| endpoints.shared_inbox.clone())
+    else {
+        return Ok(StatusCode::ACCEPTED.into_response());
+    };
 
-    receive_activity(&server, local_actor, request, value, pending_follow).await
+    receive_activity(
+        &server,
+        local_actor,
+        expected_inbox,
+        request,
+        value,
+        pending_follow,
+    )
+    .await
 }
 
 fn parse_inbox_request(
@@ -143,6 +159,7 @@ fn parse_inbox_request(
 async fn receive_activity<A, S>(
     server: &FederServer<A, S>,
     local_actor: Actor,
+    expected_inbox: Iri,
     request: InboxRequest,
     value: Value,
     pending_follow: Option<PendingFollow>,
@@ -157,9 +174,9 @@ where
         InboxAuthPolicy::RequireSigned => Some(
             verify_signed_request(
                 server.resolver(),
-                &local_actor,
                 &request,
                 activity_actor_id.as_ref().ok_or(StatusCode::UNAUTHORIZED)?,
+                &expected_inbox,
             )
             .await?,
         ),
@@ -280,9 +297,9 @@ async fn resolve_actor_reference(
 
 async fn verify_signed_request(
     resolver: &ActorResolver,
-    local_actor: &Actor,
     request: &InboxRequest,
     activity_actor_id: &Iri,
+    expected_inbox: &Iri,
 ) -> Result<Actor, StatusCode> {
     let signature_header = request
         .headers
@@ -316,7 +333,7 @@ async fn verify_signed_request(
         return Err(StatusCode::UNAUTHORIZED);
     }
 
-    verify_request_host(&request.headers, &local_actor.inbox)?;
+    verify_request_host(&request.headers, expected_inbox)?;
     verify_request_date(&request.headers)?;
     verify_request_digest(&request.headers, &request.body)?;
 
