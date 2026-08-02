@@ -24,6 +24,7 @@ pub mod follow;
 pub mod followers;
 pub mod inbox;
 pub mod negotiation;
+pub mod note;
 pub mod send;
 pub mod url;
 pub mod webfinger;

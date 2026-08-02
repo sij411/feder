@@ -27,8 +27,13 @@ use axum::{
     response::IntoResponse,
     routing::{get, post},
 };
-use feder_vocab::{Actor, CryptographicKey, Endpoints, Iri, Reference};
-use ref_feder_core::{follow::PendingFollow, key::ActorKeyPair, storage::ServerStorage};
+use feder_vocab::{Actor, CryptographicKey, Endpoints, Iri, Note, Reference, References};
+use ref_feder_core::{
+    follow::PendingFollow,
+    key::ActorKeyPair,
+    note::CreateNoteInput,
+    storage::{NoteStore, ServerStorage},
+};
 use ref_feder_runtime_server::{
     ActorDispatcher, Error, FederServer, InboxAuthPolicy, OutboundAddressPolicy,
     build_router_with_state,
@@ -51,6 +56,7 @@ struct ExampleStorage {
     actor_key_pair: ActorKeyPair,
     latest_follower: Mutex<Option<(Actor, Iri)>>,
     latest_outbound_follow: Mutex<Option<OutboundFollowState>>,
+    latest_note: Mutex<Option<Note>>,
 }
 
 enum OutboundFollowState {
@@ -189,6 +195,19 @@ impl ServerStorage for ExampleStorage {
     }
 }
 
+impl NoteStore for ExampleStorage {
+    type Error = ExampleStorageError;
+
+    fn store_note(&self, note: &Note) -> Result<(), Self::Error> {
+        *self
+            .latest_note
+            .lock()
+            .map_err(|_| ExampleStorageError("Note state lock poisoned"))? = Some(note.clone());
+        tracing::info!(note = %note.id, "stored Note");
+        Ok(())
+    }
+}
+
 fn local_actor(key_pair: &ActorKeyPair) -> Actor {
     let actor_id = format!("{ORIGIN}/users/{IDENTIFIER}");
     let mut actor = Actor::person(
@@ -280,6 +299,54 @@ async fn send_example_follow(server: Arc<ExampleServer>) -> StatusCode {
     }
 }
 
+async fn create_example_note(server: Arc<ExampleServer>) -> StatusCode {
+    let local_actor_id = format!("{ORIGIN}/users/{IDENTIFIER}")
+        .parse()
+        .expect("valid local actor IRI");
+    let note_id = format!("{ORIGIN}/users/{IDENTIFIER}/posts/example")
+        .parse()
+        .expect("valid Note IRI");
+    let create_id = format!("{ORIGIN}/users/{IDENTIFIER}/activities/create/example")
+        .parse()
+        .expect("valid Create activity IRI");
+    let public = "https://www.w3.org/ns/activitystreams#Public"
+        .parse()
+        .expect("valid ActivityStreams Public collection IRI");
+    let followers = format!("{ORIGIN}/users/{IDENTIFIER}/followers")
+        .parse()
+        .expect("valid followers collection IRI");
+
+    match server
+        .create_note(
+            &local_actor_id,
+            CreateNoteInput {
+                note_id,
+                create_id,
+                to: References::one(public),
+                cc: References::one(followers),
+                content: "Hello from the reference Feder runtime.".to_string(),
+                media_type: Some("text/plain".to_string()),
+                published: None,
+                url: None,
+            },
+        )
+        .await
+    {
+        Ok(outcome) => {
+            tracing::info!(
+                note = %outcome.note.id,
+                activity = %outcome.activity.id,
+                "created Note"
+            );
+            StatusCode::CREATED
+        }
+        Err(error) => {
+            tracing::error!(%error, "failed to create Note");
+            StatusCode::INTERNAL_SERVER_ERROR
+        }
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Error> {
     tracing_subscriber::fmt()
@@ -300,6 +367,7 @@ async fn main() -> Result<(), Error> {
         actor_key_pair,
         latest_follower: Mutex::new(None),
         latest_outbound_follow: Mutex::new(None),
+        latest_note: Mutex::new(None),
     };
     let dispatcher = SingleActorDispatcher { actor };
     let server = Arc::new(
@@ -311,12 +379,17 @@ async fn main() -> Result<(), Error> {
         .with_inbox_auth_policy(InboxAuthPolicy::AllowUnsignedInsecureDev),
     );
     let follow_server = Arc::clone(&server);
+    let note_server = Arc::clone(&server);
     let app = build_router_with_state(server)
         .route("/remote/users/bob", get(remote_actor_document))
         .route("/remote-inbox", post(remote_inbox))
         .route(
             "/send-follow",
             post(move || send_example_follow(Arc::clone(&follow_server))),
+        )
+        .route(
+            "/create-note",
+            post(move || create_example_note(Arc::clone(&note_server))),
         );
 
     tracing::info!(

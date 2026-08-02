@@ -138,10 +138,21 @@ The shared inbox uses the linked Follow IRI to find Alice, core validates Bob
 against the pending relationship, and storage atomically changes that exact
 relationship from pending to accepted. Repeating the Accept is a safe no-op.
 
+Create and persist a local Note:
+
+~~~~ sh
+curl -i -X POST http://127.0.0.1:3000/create-note
+~~~~
+
+The application supplies stable Note and Create activity IRIs plus the Note's
+content and addressing. Core constructs both values, and the runtime persists
+only the durable Note through `NoteStore`. Delivery of the transient Create
+activity is intentionally left for the next migration step.
+
 The example loads its actor key pair from the repository's test fixture and
-retains only that pair, the latest follower, and the latest outbound Follow, so
-repeated requests do not grow an in-memory protocol history. The fixture key
-is public test data and must never be used for a real actor. Unsigned incoming
-requests and private outbound addresses are enabled only for this local
-development example; `FederServer` requires signed requests and public
-destinations by default.
+retains only that pair, the latest follower, the latest outbound Follow, and
+the latest Note, so repeated requests do not grow an in-memory protocol
+history. The fixture key is public test data and must never be used for a real
+actor. Unsigned incoming requests and private outbound addresses are enabled
+only for this local development example; `FederServer` requires signed
+requests and public destinations by default.

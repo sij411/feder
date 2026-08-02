@@ -15,7 +15,7 @@
 
 use alloc::vec::Vec;
 
-use feder_vocab::{Actor, Iri};
+use feder_vocab::{Actor, Iri, Note};
 
 use crate::{follow::PendingFollow, key::ActorKeyPair};
 
@@ -39,4 +39,10 @@ pub trait ServerStorage {
 
     /// Confirm `expected` only if that exact relationship is still pending.
     fn confirm_pending_follow(&self, expected: &PendingFollow) -> Result<bool, Self::Error>;
+}
+
+pub trait NoteStore {
+    type Error;
+
+    fn store_note(&self, note: &Note) -> Result<(), Self::Error>;
 }

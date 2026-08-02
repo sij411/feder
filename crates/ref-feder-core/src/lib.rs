@@ -27,6 +27,7 @@ use feder_vocab::{Actor, Iri};
 
 pub mod follow;
 pub mod key;
+pub mod note;
 pub mod storage;
 pub mod undo;
 
