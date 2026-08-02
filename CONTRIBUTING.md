@@ -75,20 +75,23 @@ execution. The intended crate roles are:
 
  -  `feder-vocab`: Type-safe representations of Activity Vocabulary objects,
     such as actors, notes, and activities.
- -  `feder-core`: The portable ActivityPub protocol engine, responsible for
-    protocol decisions and state transitions.
- -  Runtime crates: Platform-specific execution layers for networking, storage,
-    clocks, timers, async runtimes, and operating system or hardware
-    integration.
+ -  `feder-core`: Portable ActivityPub protocol decisions and capability traits.
+    It derives transient outcomes from facts supplied by its caller and does
+    not retain protocol state.
+ -  `feder-server`: The standard operating system runtime for HTTP networking,
+    SQLite storage, actor resolution, request verification, and activity
+    delivery.
+ -  Future runtime crates: Platform-specific implementations for other async
+    runtimes, operating systems, or hardware environments.
 
 When contributing to `feder-core`, avoid adding direct dependencies on HTTP
 clients or servers, databases, filesystems, async runtimes, system clocks, or
 platform-specific crates. Runtime crates may use those dependencies when
 appropriate, but those choices should not leak into the portable core.
 
-Core behaviour should generally be tested by feeding an input into the core and
-asserting the returned actions. Core tests should not require real networking,
-storage, or async execution.
+Core behaviour should generally be tested by feeding stored facts and protocol
+input into a core function and asserting the returned transient outcome. Core
+tests should not require real networking, storage, or async execution.
 
 ### Git pre-commit hook
 

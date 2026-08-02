@@ -298,13 +298,12 @@ version = "0.1.0"
 dependencies = [
  "base64",
  "feder-vocab",
- "rand_chacha",
  "rsa",
  "zeroize",
 ]
 
 [[package]]
-name = "feder-runtime-server"
+name = "feder-server"
 version = "0.1.0"
 dependencies = [
  "axum",
@@ -312,7 +311,6 @@ dependencies = [
  "feder-vocab",
  "httpdate",
  "ipnet",
- "iri-string",
  "mime",
  "percent-encoding",
  "rand_core 0.6.4",
@@ -1114,51 +1112,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "ref-actor-server"
-version = "0.1.0"
-dependencies = [
- "axum",
- "feder-vocab",
- "ref-feder-core",
- "ref-feder-runtime-server",
- "tokio",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
-name = "ref-feder-core"
-version = "0.1.0"
-dependencies = [
- "base64",
- "feder-vocab",
- "rsa",
- "zeroize",
-]
-
-[[package]]
-name = "ref-feder-runtime-server"
-version = "0.1.0"
-dependencies = [
- "axum",
- "feder-vocab",
- "httpdate",
- "ipnet",
- "mime",
- "percent-encoding",
- "rand_core 0.6.4",
- "ref-feder-core",
- "reqwest",
- "rusqlite",
- "serde",
- "serde_json",
- "thiserror",
- "tokio",
- "tower",
- "url",
-]
-
-[[package]]
 name = "regex-automata"
 version = "0.4.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1542,10 +1495,10 @@ name = "single-user-server"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "feder-core",
+ "feder-server",
  "feder-vocab",
  "rand_core 0.6.4",
- "ref-feder-core",
- "ref-feder-runtime-server",
  "tokio",
  "tracing",
  "tracing-subscriber",

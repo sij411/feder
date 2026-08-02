@@ -15,12 +15,12 @@
 
 use std::{convert::Infallible, env, error::Error, net::SocketAddr, path::PathBuf};
 
-use feder_vocab::{Actor, CryptographicKey, Endpoints, Iri, Reference};
-use rand_core::OsRng;
-use ref_feder_core::{ActorDispatcher, key::ActorKeyPair};
-use ref_feder_runtime_server::{
+use feder_core::{ActorDispatcher, key::ActorKeyPair};
+use feder_server::{
     FederServer, InboxAuthPolicy, OutboundAddressPolicy, build_router, storage::SqliteStore,
 };
+use feder_vocab::{Actor, CryptographicKey, Endpoints, Iri, Reference};
+use rand_core::OsRng;
 
 const IDENTIFIER: &str = "alice";
 const ORIGIN: &str = "http://127.0.0.1:3000";

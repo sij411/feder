@@ -23,10 +23,11 @@ software so different parts can run on machines with very different resources.
 Approach
 --------
 
-Feder separates ActivityPub protocol logic from platform execution. The core
-should contain federation behavior such as inbox/outbox state, delivery
-decisions, and protocol-level rules. Runtimes provide platform-specific pieces
-such as networking, storage, clocks, scheduling, and execution.
+Feder separates ActivityPub protocol decisions from platform execution.
+`feder-core` derives transient protocol outcomes from application-provided
+facts without retaining state. `feder-server` supplies a standard operating
+system runtime with HTTP networking, SQLite storage, actor resolution, request
+verification, and activity delivery.
 
 The first target is a Linux proof of concept for a small single-user
 ActivityPub server. Future runtimes may explore more constrained environments.

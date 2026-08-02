@@ -1,7 +1,7 @@
 Single-User Server Example
 ==========================
 
-Demo app using `ref-feder-runtime-server` with one hardcoded local actor and
+Demo app using `feder-server` with one hardcoded local actor and
 the built-in SQLite storage adapter.
 
 

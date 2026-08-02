@@ -52,7 +52,9 @@ let dependency_version = ($publish_version | split row "+" | first)
 let crate_names = (
   cargo metadata --no-deps --format-version 1
   | from json
-  | get packages.name
+  | get packages
+  | where {|package| $package.publish != [] }
+  | get name
 )
 
 let manifest = (

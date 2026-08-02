@@ -1,6 +1,6 @@
 [package]
 name = "feder-core"
-description = "Portable ActivityPub core logic for Feder."
+description = "Portable ActivityPub protocol decisions and capability traits for Feder."
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
@@ -17,8 +17,10 @@ feder-vocab.workspace = true
 rsa = { workspace = true, optional = true }
 zeroize = { workspace = true, optional = true }
 
-[dev-dependencies]
-rand_chacha.workspace = true
-
 [lints]
 workspace = true
+
+[[test]]
+name = "key"
+path = "tests/key.rs"
+required-features = ["http-signatures"]

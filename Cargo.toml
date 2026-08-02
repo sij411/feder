@@ -2,10 +2,7 @@
 members = [
   "crates/feder-core",
   "crates/feder-vocab",
-  "crates/feder-runtime-server",
-  "crates/ref-feder-core",
-  "crates/ref-feder-runtime-server",
-  "examples/ref-actor-server",
+  "crates/feder-server",
   "examples/single-user-server",
 ]
 resolver = "3"
@@ -23,10 +20,8 @@ repository = "https://github.com/fedify-dev/feder"
 # Use `mise run bump-execute <version>` instead of editing these by hand.
 base64 = { version = "0.22.1", default-features = false, features = ["alloc"] }
 feder-core = { version = "0.1.0", path = "crates/feder-core" }
-feder-runtime-server = { version = "0.1.0", path = "crates/feder-runtime-server" }
+feder-server = { version = "0.1.0", path = "crates/feder-server" }
 feder-vocab = { version = "0.1.0", path = "crates/feder-vocab" }
-ref-feder-core = { version = "0.1.0", path = "crates/ref-feder-core" }
-ref-feder-runtime-server = { version = "0.1.0", path = "crates/ref-feder-runtime-server" }
 iri-string = { version = "0.7.12", default-features = false, features = ["alloc", "serde"] }
 rand_chacha = { version = "0.3.1", default-features = false }
 rand_core = { version = "0.6.4", features = ["getrandom"] }
