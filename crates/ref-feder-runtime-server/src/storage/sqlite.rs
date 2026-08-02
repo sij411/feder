@@ -25,9 +25,10 @@ use std::{
 };
 
 use feder_vocab::{Actor, Iri, Note};
+use rand_core::CryptoRngCore;
 use ref_feder_core::{
     follow::PendingFollow,
-    key::ActorKeyPair,
+    key::{ActorKeyPair, generate_actor_key_pair},
     storage::{FollowerDeliveryStore, FollowerDeliveryTarget, NoteStore, ServerStorage, Storage},
 };
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
@@ -79,6 +80,53 @@ impl SqliteStore {
             ],
         )?;
         Ok(())
+    }
+
+    /// Loads the actor's existing signing identity or provisions it once.
+    ///
+    /// Concurrent provisioners keep the first key pair inserted for the actor;
+    /// an existing identity is never replaced.
+    pub fn load_or_generate_actor_key_pair(
+        &self,
+        actor_id: &Iri,
+        rng: &mut (impl CryptoRngCore + ?Sized),
+    ) -> Result<ActorKeyPair, StoreError> {
+        self.load_or_insert_actor_key_pair(actor_id, || {
+            generate_actor_key_pair(rng).map_err(StoreError::from)
+        })
+    }
+
+    fn load_or_insert_actor_key_pair(
+        &self,
+        actor_id: &Iri,
+        generate: impl FnOnce() -> Result<ActorKeyPair, StoreError>,
+    ) -> Result<ActorKeyPair, StoreError> {
+        {
+            let connection = self.connection()?;
+            if let Some(key_pair) = load_actor_key_pair(&connection, actor_id)? {
+                return Ok(key_pair);
+            }
+        }
+
+        let generated = generate()?;
+        let connection = self.connection()?;
+        let inserted = connection.execute(
+            r#"
+            INSERT INTO keys (actor_id, private_key_pem, public_key_pem)
+            VALUES (?1, ?2, ?3)
+            ON CONFLICT(actor_id) DO NOTHING
+            "#,
+            params![
+                actor_id.as_str(),
+                generated.private_key_pem(),
+                generated.public_key_pem(),
+            ],
+        )?;
+        if inserted == 1 {
+            Ok(generated)
+        } else {
+            load_actor_key_pair(&connection, actor_id)?.ok_or(StoreError::ActorKeyProvisioning)
+        }
     }
 
     fn init(&self) -> Result<(), StoreError> {
@@ -169,25 +217,8 @@ impl ServerStorage for SqliteStore {
     }
 
     fn load_actor_key_pair(&self, actor_id: &Iri) -> Result<Option<ActorKeyPair>, Self::Error> {
-        let encoded_keys = self
-            .connection()?
-            .query_row(
-                r#"
-                SELECT private_key_pem, public_key_pem
-                FROM keys
-                WHERE actor_id = ?1
-                "#,
-                [actor_id.as_str()],
-                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
-            )
-            .optional()?;
-
-        encoded_keys
-            .map(|(private_key_pem, public_key_pem)| {
-                ActorKeyPair::from_pem(private_key_pem, public_key_pem)
-            })
-            .transpose()
-            .map_err(StoreError::from)
+        let connection = self.connection()?;
+        load_actor_key_pair(&connection, actor_id)
     }
 
     fn remove_follower(&self, follower: &Iri, following: &Iri) -> Result<(), Self::Error> {
@@ -369,6 +400,30 @@ fn load_pending_follow(
         .transpose()
 }
 
+fn load_actor_key_pair(
+    connection: &Connection,
+    actor_id: &Iri,
+) -> Result<Option<ActorKeyPair>, StoreError> {
+    let encoded_keys = connection
+        .query_row(
+            r#"
+            SELECT private_key_pem, public_key_pem
+            FROM keys
+            WHERE actor_id = ?1
+            "#,
+            [actor_id.as_str()],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+        )
+        .optional()?;
+
+    encoded_keys
+        .map(|(private_key_pem, public_key_pem)| {
+            ActorKeyPair::from_pem(private_key_pem, public_key_pem)
+        })
+        .transpose()
+        .map_err(StoreError::from)
+}
+
 fn parse_iri(value: String) -> Result<Iri, StoreError> {
     value
         .parse()
@@ -508,6 +563,25 @@ mod tests {
                 .expect("load actor keys"),
             Some(key_pair)
         );
+    }
+
+    #[test]
+    fn provisions_an_actor_key_once() {
+        let store = SqliteStore::open_in_memory().expect("open store");
+        let actor_id = iri("https://local.example/users/alice");
+        let key_pair =
+            ActorKeyPair::from_pem(PRIVATE_KEY_PEM.to_string(), PUBLIC_KEY_PEM.to_string())
+                .expect("valid key pair");
+
+        let first = store
+            .load_or_insert_actor_key_pair(&actor_id, || Ok(key_pair.clone()))
+            .expect("provision actor key");
+        let second = store
+            .load_or_insert_actor_key_pair(&actor_id, || panic!("existing key must be reused"))
+            .expect("load actor key");
+
+        assert_eq!(first, key_pair);
+        assert_eq!(second, first);
     }
 
     #[test]

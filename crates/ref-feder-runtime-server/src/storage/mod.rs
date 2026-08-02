@@ -39,6 +39,9 @@ pub enum StoreError {
     #[error("storage lock poisoned")]
     LockPoisoned,
 
+    #[error("actor key was not stored after provisioning")]
+    ActorKeyProvisioning,
+
     #[error(transparent)]
     ActorKey(#[from] KeyError),
 }
