@@ -23,7 +23,7 @@
 extern crate alloc;
 
 pub use feder_vocab as vocab;
-use feder_vocab::Actor;
+use feder_vocab::{Actor, Iri};
 
 pub mod follow;
 pub mod key;
@@ -37,4 +37,6 @@ pub trait ActorDispatcher {
     type Error;
 
     fn get_actor(&self, identifier: &str) -> Result<Option<Actor>, Self::Error>;
+
+    fn get_actor_by_id(&self, actor_id: &Iri) -> Result<Option<Actor>, Self::Error>;
 }

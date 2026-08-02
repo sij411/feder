@@ -133,6 +133,7 @@ where
         .route("/users/{identifier}", get(actor::actor::<A, S>))
         .route("/.well-known/webfinger", get(webfinger::webfinger::<A, S>))
         .route("/users/{identifier}/inbox", post(inbox::inbox::<A, S>))
+        .route("/inbox", post(inbox::shared_inbox::<A, S>))
         .layer(DefaultBodyLimit::max(1_048_576))
         .with_state(server)
 }

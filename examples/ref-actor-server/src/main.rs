@@ -60,6 +60,10 @@ impl ActorDispatcher for SingleActorDispatcher {
     fn get_actor(&self, identifier: &str) -> Result<Option<Actor>, Self::Error> {
         Ok((identifier == IDENTIFIER).then(|| self.actor.clone()))
     }
+
+    fn get_actor_by_id(&self, actor_id: &Iri) -> Result<Option<Actor>, Self::Error> {
+        Ok((actor_id == &self.actor.id).then(|| self.actor.clone()))
+    }
 }
 
 impl ServerStorage for ExampleStorage {
@@ -170,6 +174,7 @@ async fn main() -> Result<(), Error> {
         actor = %format!("{ORIGIN}/users/{IDENTIFIER}"),
         webfinger = %format!("{ORIGIN}/.well-known/webfinger"),
         inbox = %format!("{ORIGIN}/users/{IDENTIFIER}/inbox"),
+        shared_inbox = %format!("{ORIGIN}/inbox"),
         "starting reference ActivityPub server example"
     );
 

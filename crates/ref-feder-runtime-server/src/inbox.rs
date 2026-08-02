@@ -80,6 +80,43 @@ where
         .get_actor(&identifier)
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
         .ok_or(StatusCode::NOT_FOUND)?;
+    let (request, value) = parse_inbox_request(headers, method, uri, body)?;
+
+    receive_activity(&server, local_actor, request, value).await
+}
+
+pub async fn shared_inbox<A, S>(
+    State(server): State<Arc<FederServer<A, S>>>,
+    headers: HeaderMap,
+    method: Method,
+    uri: Uri,
+    body: Bytes,
+) -> Result<Response, StatusCode>
+where
+    A: ActorDispatcher,
+    S: ServerStorage,
+{
+    let (request, value) = parse_inbox_request(headers, method, uri, body)?;
+    let Some(target_id) = activity_target_id(&value) else {
+        return Ok(StatusCode::ACCEPTED.into_response());
+    };
+    let Some(local_actor) = server
+        .actors()
+        .get_actor_by_id(&target_id)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+    else {
+        return Ok(StatusCode::ACCEPTED.into_response());
+    };
+
+    receive_activity(&server, local_actor, request, value).await
+}
+
+fn parse_inbox_request(
+    headers: HeaderMap,
+    method: Method,
+    uri: Uri,
+    body: Bytes,
+) -> Result<(InboxRequest, Value), StatusCode> {
     let content_type = headers
         .get(CONTENT_TYPE)
         .and_then(|value| value.to_str().ok())
@@ -97,6 +134,20 @@ where
         body,
     };
     let value: Value = from_slice(&request.body).map_err(|_| StatusCode::BAD_REQUEST)?;
+
+    Ok((request, value))
+}
+
+async fn receive_activity<A, S>(
+    server: &FederServer<A, S>,
+    local_actor: Actor,
+    request: InboxRequest,
+    value: Value,
+) -> Result<Response, StatusCode>
+where
+    A: ActorDispatcher,
+    S: ServerStorage,
+{
     let activity_actor_id = activity_actor_id(&value);
     let verified_actor = match server.inbox_auth_policy() {
         InboxAuthPolicy::AllowUnsignedInsecureDev => None,
@@ -292,6 +343,20 @@ fn activity_actor_id(value: &Value) -> Option<Iri> {
     actor
         .as_str()
         .or_else(|| actor.get("id").and_then(Value::as_str))?
+        .parse()
+        .ok()
+}
+
+fn activity_target_id(value: &Value) -> Option<Iri> {
+    let target = match value.get("type").and_then(Value::as_str) {
+        Some("Follow") => value.get("object")?,
+        Some("Undo") => value.get("object")?.get("object")?,
+        _ => return None,
+    };
+
+    target
+        .as_str()
+        .or_else(|| target.get("id").and_then(Value::as_str))?
         .parse()
         .ok()
 }

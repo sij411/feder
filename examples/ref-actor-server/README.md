@@ -1,8 +1,8 @@
 Reference ActivityPub Server
 ============================
 
-Minimal actor, WebFinger, and personal inbox endpoints using `ref-feder-core`
-capabilities through `ref-feder-runtime-server`.
+Minimal actor, WebFinger, personal inbox, and shared inbox endpoints using
+`ref-feder-core` capabilities through `ref-feder-runtime-server`.
 
 
 Run
@@ -36,7 +36,8 @@ The endpoint returns `application/jrd+json` with a `self` link to
 `http://127.0.0.1:3000/users/alice`. The domain in the `acct:` resource must
 match the request's `Host` header.
 
-Send an unsigned development Follow to Alice's personal inbox:
+Send an unsigned development Follow to the shared inbox. The runtime selects
+Alice from the Follow's `object` IRI:
 
 ~~~~ sh
 curl -i \
@@ -53,7 +54,7 @@ curl -i \
     },
     "object": "http://127.0.0.1:3000/users/alice"
   }' \
-  http://127.0.0.1:3000/users/alice/inbox
+  http://127.0.0.1:3000/inbox
 ~~~~
 
 The endpoint stores the latest follower, loads Alice's key pair, and sends a
@@ -83,7 +84,7 @@ curl -i \
       "object": "http://127.0.0.1:3000/users/alice"
     }
   }' \
-  http://127.0.0.1:3000/users/alice/inbox
+  http://127.0.0.1:3000/inbox
 ~~~~
 
 The endpoint validates that Bob owns the embedded Follow, removes the matching

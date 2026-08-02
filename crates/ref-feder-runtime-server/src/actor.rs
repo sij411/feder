@@ -43,6 +43,10 @@ where
     fn get_actor(&self, identifier: &str) -> Result<Option<Actor>, Self::Error> {
         self.actors().get_actor(identifier)
     }
+
+    fn get_actor_by_id(&self, actor_id: &Iri) -> Result<Option<Actor>, Self::Error> {
+        self.actors().get_actor_by_id(actor_id)
+    }
 }
 
 pub async fn actor<A, S>(
