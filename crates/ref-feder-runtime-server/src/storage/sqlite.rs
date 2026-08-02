@@ -1,0 +1,518 @@
+// Feder: A portable ActivityPub core for many runtimes.
+// Copyright (C) 2026 Feder contributors
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Affero General Public License as published by
+// the Free Software Foundation, version 3.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+// GNU Affero General Public License for more details.
+//
+// You should have received a copy of the GNU Affero General Public License
+// along with this program. If not, see <https://www.gnu.org/licenses/>.
+
+use std::{
+    path::Path,
+    sync::{Mutex, MutexGuard},
+};
+
+#[cfg(unix)]
+use std::{
+    fs::OpenOptions,
+    os::unix::fs::{OpenOptionsExt, PermissionsExt},
+};
+
+use feder_vocab::{Actor, Iri, Note};
+use ref_feder_core::{
+    follow::PendingFollow,
+    key::ActorKeyPair,
+    storage::{FollowerDeliveryStore, FollowerDeliveryTarget, NoteStore, ServerStorage, Storage},
+};
+use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
+
+use super::StoreError;
+
+pub struct SqliteStore {
+    connection: Mutex<Connection>,
+}
+
+impl SqliteStore {
+    pub fn open(path: &Path) -> Result<Self, StoreError> {
+        #[cfg(unix)]
+        let database_file = prepare_database_file(path)?;
+
+        let store = Self {
+            connection: Mutex::new(Connection::open(path)?),
+        };
+
+        #[cfg(unix)]
+        drop(database_file);
+
+        store.init()?;
+        Ok(store)
+    }
+
+    pub fn open_in_memory() -> Result<Self, StoreError> {
+        let store = Self {
+            connection: Mutex::new(Connection::open_in_memory()?),
+        };
+        store.init()?;
+        Ok(store)
+    }
+
+    pub fn insert_actor_key_pair(
+        &self,
+        actor_id: &Iri,
+        key_pair: &ActorKeyPair,
+    ) -> Result<(), StoreError> {
+        self.connection()?.execute(
+            r#"
+            INSERT INTO keys (actor_id, private_key_pem, public_key_pem)
+            VALUES (?1, ?2, ?3)
+            "#,
+            params![
+                actor_id.as_str(),
+                key_pair.private_key_pem(),
+                key_pair.public_key_pem(),
+            ],
+        )?;
+        Ok(())
+    }
+
+    fn init(&self) -> Result<(), StoreError> {
+        self.connection()?.execute_batch(
+            r#"
+            CREATE TABLE IF NOT EXISTS followers (
+                follower_actor_id TEXT NOT NULL,
+                following_actor_id TEXT NOT NULL,
+                inbox_url TEXT,
+                shared_inbox_url TEXT,
+                PRIMARY KEY (follower_actor_id, following_actor_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_followers_following_actor_id
+                ON followers (following_actor_id);
+            CREATE TABLE IF NOT EXISTS keys (
+                actor_id TEXT PRIMARY KEY NOT NULL,
+                private_key_pem TEXT NOT NULL,
+                public_key_pem TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS objects (
+                object_id TEXT PRIMARY KEY NOT NULL,
+                object_type TEXT NOT NULL,
+                object_json TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS outbound_follows (
+                follow_activity_id TEXT PRIMARY KEY NOT NULL,
+                local_actor_id TEXT NOT NULL,
+                remote_actor_json TEXT NOT NULL,
+                state TEXT NOT NULL CHECK (state IN ('pending', 'accepted'))
+            );
+            "#,
+        )?;
+        Ok(())
+    }
+
+    fn connection(&self) -> Result<MutexGuard<'_, Connection>, StoreError> {
+        self.connection.lock().map_err(|_| StoreError::LockPoisoned)
+    }
+}
+
+#[cfg(unix)]
+fn prepare_database_file(path: &Path) -> Result<std::fs::File, std::io::Error> {
+    let file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .mode(0o600)
+        .open(path)?;
+
+    let mut permissions = file.metadata()?.permissions();
+    permissions.set_mode(0o600);
+    file.set_permissions(permissions)?;
+    Ok(file)
+}
+
+impl Storage for SqliteStore {
+    type Error = StoreError;
+}
+
+impl ServerStorage for SqliteStore {
+    fn store_follower(&self, follower: &Actor, following: &Iri) -> Result<(), Self::Error> {
+        let shared_inbox = follower
+            .endpoints
+            .as_ref()
+            .and_then(|endpoints| endpoints.shared_inbox.as_ref());
+        self.connection()?.execute(
+            r#"
+            INSERT INTO followers (
+                follower_actor_id,
+                following_actor_id,
+                inbox_url,
+                shared_inbox_url
+            )
+            VALUES (?1, ?2, ?3, ?4)
+            ON CONFLICT(follower_actor_id, following_actor_id) DO UPDATE SET
+                inbox_url = excluded.inbox_url,
+                shared_inbox_url = excluded.shared_inbox_url
+            "#,
+            params![
+                follower.id.as_str(),
+                following.as_str(),
+                follower.inbox.as_str(),
+                shared_inbox.map(|inbox| inbox.as_str()),
+            ],
+        )?;
+        Ok(())
+    }
+
+    fn load_actor_key_pair(&self, actor_id: &Iri) -> Result<Option<ActorKeyPair>, Self::Error> {
+        let encoded_keys = self
+            .connection()?
+            .query_row(
+                r#"
+                SELECT private_key_pem, public_key_pem
+                FROM keys
+                WHERE actor_id = ?1
+                "#,
+                [actor_id.as_str()],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+            )
+            .optional()?;
+
+        encoded_keys
+            .map(|(private_key_pem, public_key_pem)| {
+                ActorKeyPair::from_pem(private_key_pem, public_key_pem)
+            })
+            .transpose()
+            .map_err(StoreError::from)
+    }
+
+    fn remove_follower(&self, follower: &Iri, following: &Iri) -> Result<(), Self::Error> {
+        self.connection()?.execute(
+            r#"
+            DELETE FROM followers
+            WHERE follower_actor_id = ?1 AND following_actor_id = ?2
+            "#,
+            params![follower.as_str(), following.as_str()],
+        )?;
+        Ok(())
+    }
+
+    fn list_followers(&self, following: &Iri) -> Result<Vec<Iri>, Self::Error> {
+        let connection = self.connection()?;
+        let mut statement = connection.prepare(
+            r#"
+            SELECT follower_actor_id
+            FROM followers
+            WHERE following_actor_id = ?1
+            ORDER BY follower_actor_id
+            "#,
+        )?;
+        let rows = statement.query_map([following.as_str()], |row| row.get::<_, String>(0))?;
+        rows.map(|row| parse_iri(row?)).collect()
+    }
+
+    fn store_pending_follow(&self, follow: &PendingFollow) -> Result<(), Self::Error> {
+        let remote_actor_json = serde_json::to_string(&follow.remote_actor)?;
+        self.connection()?.execute(
+            r#"
+            INSERT INTO outbound_follows (
+                follow_activity_id,
+                local_actor_id,
+                remote_actor_json,
+                state
+            )
+            VALUES (?1, ?2, ?3, 'pending')
+            ON CONFLICT(follow_activity_id) DO UPDATE SET
+                local_actor_id = excluded.local_actor_id,
+                remote_actor_json = excluded.remote_actor_json,
+                state = 'pending'
+            "#,
+            params![
+                follow.follow_activity.as_str(),
+                follow.local_actor.as_str(),
+                remote_actor_json,
+            ],
+        )?;
+        Ok(())
+    }
+
+    fn load_pending_follow(
+        &self,
+        follow_activity: &Iri,
+    ) -> Result<Option<PendingFollow>, Self::Error> {
+        let connection = self.connection()?;
+        load_pending_follow(&connection, follow_activity)
+    }
+
+    fn confirm_pending_follow(&self, expected: &PendingFollow) -> Result<bool, Self::Error> {
+        let mut connection = self.connection()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let stored = load_pending_follow(&transaction, &expected.follow_activity)?;
+        if stored.as_ref() != Some(expected) {
+            return Ok(false);
+        }
+        let changed = transaction.execute(
+            r#"
+            UPDATE outbound_follows
+            SET state = 'accepted'
+            WHERE follow_activity_id = ?1 AND state = 'pending'
+            "#,
+            [expected.follow_activity.as_str()],
+        )?;
+        transaction.commit()?;
+        Ok(changed == 1)
+    }
+}
+
+impl NoteStore for SqliteStore {
+    fn store_note(&self, note: &Note) -> Result<(), Self::Error> {
+        let note_json = serde_json::to_string(note)?;
+        self.connection()?.execute(
+            r#"
+            INSERT INTO objects (object_id, object_type, object_json)
+            VALUES (?1, 'Note', ?2)
+            ON CONFLICT(object_id) DO UPDATE SET
+                object_type = excluded.object_type,
+                object_json = excluded.object_json
+            "#,
+            params![note.id.as_str(), note_json],
+        )?;
+        Ok(())
+    }
+
+    fn load_note(&self, note_id: &Iri) -> Result<Option<Note>, Self::Error> {
+        let stored = self
+            .connection()?
+            .query_row(
+                r#"
+                SELECT object_type, object_json
+                FROM objects
+                WHERE object_id = ?1
+                "#,
+                [note_id.as_str()],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+            )
+            .optional()?;
+
+        stored
+            .map(|(object_type, object_json)| {
+                if object_type != "Note" {
+                    return Err(StoreError::UnsupportedStoredObjectType(object_type));
+                }
+                serde_json::from_str(&object_json).map_err(StoreError::from)
+            })
+            .transpose()
+    }
+}
+
+impl FollowerDeliveryStore for SqliteStore {
+    fn list_follower_delivery_targets(
+        &self,
+        local_actor: &Iri,
+    ) -> Result<Vec<FollowerDeliveryTarget>, Self::Error> {
+        let connection = self.connection()?;
+        let mut statement = connection.prepare(
+            r#"
+            SELECT follower_actor_id, inbox_url, shared_inbox_url
+            FROM followers
+            WHERE following_actor_id = ?1 AND inbox_url IS NOT NULL
+            ORDER BY follower_actor_id
+            "#,
+        )?;
+        let rows = statement.query_map([local_actor.as_str()], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, Option<String>>(2)?,
+            ))
+        })?;
+
+        rows.map(|row| {
+            let (actor_id, inbox, shared_inbox) = row?;
+            Ok(FollowerDeliveryTarget {
+                actor_id: parse_iri(actor_id)?,
+                inbox: parse_iri(inbox)?,
+                shared_inbox: shared_inbox.map(parse_iri).transpose()?,
+            })
+        })
+        .collect()
+    }
+}
+
+fn load_pending_follow(
+    connection: &Connection,
+    follow_activity: &Iri,
+) -> Result<Option<PendingFollow>, StoreError> {
+    let stored = connection
+        .query_row(
+            r#"
+            SELECT local_actor_id, remote_actor_json
+            FROM outbound_follows
+            WHERE follow_activity_id = ?1 AND state = 'pending'
+            "#,
+            [follow_activity.as_str()],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+        )
+        .optional()?;
+    stored
+        .map(|(local_actor, remote_actor_json)| {
+            Ok(PendingFollow {
+                local_actor: parse_iri(local_actor)?,
+                remote_actor: serde_json::from_str(&remote_actor_json)?,
+                follow_activity: follow_activity.clone(),
+            })
+        })
+        .transpose()
+}
+
+fn parse_iri(value: String) -> Result<Iri, StoreError> {
+    value
+        .parse()
+        .map_err(|_| StoreError::InvalidIri(value.to_owned()))
+}
+
+#[cfg(test)]
+mod tests {
+    use feder_vocab::{Endpoints, Reference};
+
+    use super::*;
+
+    const PRIVATE_KEY_PEM: &str =
+        include_str!("../../../feder-core/tests/fixtures/rsa-private-key.pem");
+    const PUBLIC_KEY_PEM: &str =
+        include_str!("../../../feder-core/tests/fixtures/rsa-public-key.pem");
+
+    fn iri(value: &str) -> Iri {
+        value.parse().expect("valid test IRI")
+    }
+
+    fn actor(id: &str) -> Actor {
+        Actor::person(
+            iri(id),
+            iri(&format!("{id}/inbox")),
+            iri(&format!("{id}/outbox")),
+        )
+    }
+
+    #[test]
+    fn stores_lists_and_removes_follower_delivery_facts() {
+        let store = SqliteStore::open_in_memory().expect("open store");
+        let following = iri("https://local.example/users/alice");
+        let mut follower = actor("https://remote.example/users/bob");
+        follower.endpoints = Some(Endpoints {
+            shared_inbox: Some(iri("https://remote.example/inbox")),
+        });
+
+        store
+            .store_follower(&follower, &following)
+            .expect("store follower");
+
+        assert_eq!(
+            store.list_followers(&following).expect("list followers"),
+            vec![follower.id.clone()]
+        );
+        assert_eq!(
+            store
+                .list_follower_delivery_targets(&following)
+                .expect("list delivery targets"),
+            vec![FollowerDeliveryTarget {
+                actor_id: follower.id.clone(),
+                inbox: follower.inbox.clone(),
+                shared_inbox: follower
+                    .endpoints
+                    .and_then(|endpoints| endpoints.shared_inbox),
+            }]
+        );
+
+        store
+            .remove_follower(&follower.id, &following)
+            .expect("remove follower");
+        assert!(
+            store
+                .list_followers(&following)
+                .expect("list followers")
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn stores_and_loads_note() {
+        let store = SqliteStore::open_in_memory().expect("open store");
+        let mut note = Note::new(iri("https://local.example/posts/1"));
+        note.attributed_to = Some(Reference::id(iri("https://local.example/users/alice")));
+        note.content = Some("hello".to_string());
+
+        store.store_note(&note).expect("store Note");
+
+        assert_eq!(store.load_note(&note.id).expect("load Note"), Some(note));
+    }
+
+    #[test]
+    fn confirms_only_the_expected_pending_follow() {
+        let store = SqliteStore::open_in_memory().expect("open store");
+        let pending = PendingFollow {
+            local_actor: iri("https://local.example/users/alice"),
+            remote_actor: actor("https://remote.example/users/bob"),
+            follow_activity: iri("https://local.example/activities/follow/1"),
+        };
+        store
+            .store_pending_follow(&pending)
+            .expect("store pending Follow");
+
+        let mut wrong = pending.clone();
+        wrong.local_actor = iri("https://local.example/users/mallory");
+        assert!(
+            !store
+                .confirm_pending_follow(&wrong)
+                .expect("reject mismatch")
+        );
+        assert_eq!(
+            store
+                .load_pending_follow(&pending.follow_activity)
+                .expect("load pending Follow"),
+            Some(pending.clone())
+        );
+
+        assert!(
+            store
+                .confirm_pending_follow(&pending)
+                .expect("confirm pending Follow")
+        );
+        assert_eq!(
+            store
+                .load_pending_follow(&pending.follow_activity)
+                .expect("load accepted Follow"),
+            None
+        );
+    }
+
+    #[test]
+    fn actor_key_pair_roundtrips() {
+        let store = SqliteStore::open_in_memory().expect("open store");
+        let actor_id = iri("https://local.example/users/alice");
+        let key_pair =
+            ActorKeyPair::from_pem(PRIVATE_KEY_PEM.to_string(), PUBLIC_KEY_PEM.to_string())
+                .expect("valid key pair");
+
+        store
+            .insert_actor_key_pair(&actor_id, &key_pair)
+            .expect("store actor keys");
+
+        assert_eq!(
+            store
+                .load_actor_key_pair(&actor_id)
+                .expect("load actor keys"),
+            Some(key_pair)
+        );
+    }
+
+    #[test]
+    fn sqlite_store_is_send_and_sync() {
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<SqliteStore>();
+    }
+}

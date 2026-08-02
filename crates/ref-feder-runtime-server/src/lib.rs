@@ -27,6 +27,7 @@ pub mod negotiation;
 pub mod note;
 pub mod object;
 pub mod send;
+pub mod storage;
 pub mod url;
 pub mod webfinger;
 
