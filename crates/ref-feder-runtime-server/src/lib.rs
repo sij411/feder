@@ -20,6 +20,7 @@
 //! intentionally unstable during the architecture refactoring.
 pub mod actor;
 pub mod config;
+pub mod followers;
 pub mod inbox;
 pub mod negotiation;
 pub mod send;
@@ -131,6 +132,10 @@ where
 
     Router::new()
         .route("/users/{identifier}", get(actor::actor::<A, S>))
+        .route(
+            "/users/{identifier}/followers",
+            get(followers::followers::<A, S>),
+        )
         .route("/.well-known/webfinger", get(webfinger::webfinger::<A, S>))
         .route("/users/{identifier}/inbox", post(inbox::inbox::<A, S>))
         .route("/inbox", post(inbox::shared_inbox::<A, S>))

@@ -90,6 +90,18 @@ curl -i \
 The endpoint validates that Bob owns the embedded Follow, removes the matching
 follower relationship, and returns `202 Accepted`. Repeating the Undo is safe.
 
+Request Alice's followers collection:
+
+~~~~ sh
+curl -i \
+  -H 'Accept: application/activity+json' \
+  http://127.0.0.1:3000/users/alice/followers
+~~~~
+
+The endpoint returns an ActivityStreams `OrderedCollection`. Its
+`orderedItems` contains Bob after the Follow request and is empty after the
+Undo request.
+
 The example loads its actor key pair from the repository's test fixture and
 retains only that pair and the latest follower, so repeated requests do not
 grow an in-memory protocol history. The fixture key is public test data and

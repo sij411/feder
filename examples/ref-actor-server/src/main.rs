@@ -99,6 +99,18 @@ impl ServerStorage for ExampleStorage {
         }
         Ok(())
     }
+
+    fn list_followers(&self, following: &Iri) -> Result<Vec<Iri>, Self::Error> {
+        let latest_follower = self
+            .latest_follower
+            .lock()
+            .map_err(|_| ExampleStorageError("follower state lock poisoned"))?;
+        Ok(latest_follower
+            .as_ref()
+            .filter(|(_, stored_following)| stored_following == following)
+            .map(|(follower, _)| vec![follower.id.clone()])
+            .unwrap_or_default())
+    }
 }
 
 fn local_actor(key_pair: &ActorKeyPair) -> Actor {
@@ -114,6 +126,11 @@ fn local_actor(key_pair: &ActorKeyPair) -> Actor {
     );
     actor.preferred_username = Some(IDENTIFIER.to_string());
     actor.name = Some("Alice".to_string());
+    actor.followers = Some(
+        format!("{actor_id}/followers")
+            .parse()
+            .expect("valid followers collection IRI"),
+    );
     actor.endpoints = Some(Endpoints {
         shared_inbox: Some(
             format!("{ORIGIN}/inbox")

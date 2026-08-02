@@ -13,6 +13,8 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
+use alloc::vec::Vec;
+
 use feder_vocab::{Actor, Iri};
 
 use crate::key::ActorKeyPair;
@@ -25,4 +27,6 @@ pub trait ServerStorage {
     fn load_actor_key_pair(&self, actor_id: &Iri) -> Result<Option<ActorKeyPair>, Self::Error>;
 
     fn remove_follower(&self, follower: &Iri, following: &Iri) -> Result<(), Self::Error>;
+
+    fn list_followers(&self, following: &Iri) -> Result<Vec<Iri>, Self::Error>;
 }
