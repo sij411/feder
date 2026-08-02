@@ -52,6 +52,17 @@ pub trait NoteStore: Storage {
     fn load_note(&self, note_id: &Iri) -> Result<Option<Note>, Self::Error>;
 }
 
+/// The stored addressing facts needed to deliver an activity to a follower.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FollowerDeliveryTarget {
+    pub actor_id: Iri,
+    pub inbox: Iri,
+    pub shared_inbox: Option<Iri>,
+}
+
 pub trait FollowerDeliveryStore: ServerStorage {
-    fn list_follower_actors(&self, local_actor: &Iri) -> Result<Vec<Actor>, Self::Error>;
+    fn list_follower_delivery_targets(
+        &self,
+        local_actor: &Iri,
+    ) -> Result<Vec<FollowerDeliveryTarget>, Self::Error>;
 }

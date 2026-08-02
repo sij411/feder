@@ -15,7 +15,7 @@
 
 use std::collections::HashSet;
 
-use feder_vocab::{Actor, Iri};
+use feder_vocab::Iri;
 use ref_feder_core::{
     ActorDispatcher,
     note::{CreateNoteInput, CreateNoteOutcome, NoteRecipient, create_note},
@@ -99,9 +99,12 @@ where
             let NoteRecipient::Followers(local_actor_id) = recipient else {
                 continue;
             };
-            for actor in self.storage().list_follower_actors(local_actor_id)? {
-                covered_actor_ids.insert(actor.id.clone());
-                let inbox = preferred_shared_inbox(&actor).clone();
+            for target in self
+                .storage()
+                .list_follower_delivery_targets(local_actor_id)?
+            {
+                covered_actor_ids.insert(target.actor_id);
+                let inbox = target.shared_inbox.unwrap_or(target.inbox);
                 if seen_inboxes.insert(inbox.clone()) {
                     inboxes.push(inbox);
                 }
@@ -131,14 +134,6 @@ where
 
         Ok((inboxes, first_actor_resolve_error))
     }
-}
-
-fn preferred_shared_inbox(actor: &Actor) -> &Iri {
-    actor
-        .endpoints
-        .as_ref()
-        .and_then(|endpoints| endpoints.shared_inbox.as_ref())
-        .unwrap_or(&actor.inbox)
 }
 
 #[derive(Debug, thiserror::Error)]

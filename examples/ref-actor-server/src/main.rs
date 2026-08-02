@@ -32,7 +32,7 @@ use ref_feder_core::{
     follow::PendingFollow,
     key::ActorKeyPair,
     note::CreateNoteInput,
-    storage::{FollowerDeliveryStore, NoteStore, ServerStorage, Storage},
+    storage::{FollowerDeliveryStore, FollowerDeliveryTarget, NoteStore, ServerStorage, Storage},
 };
 use ref_feder_runtime_server::{
     ActorDispatcher, Error, FederServer, InboxAuthPolicy, OutboundAddressPolicy,
@@ -221,7 +221,10 @@ impl NoteStore for ExampleStorage {
 }
 
 impl FollowerDeliveryStore for ExampleStorage {
-    fn list_follower_actors(&self, local_actor: &Iri) -> Result<Vec<Actor>, Self::Error> {
+    fn list_follower_delivery_targets(
+        &self,
+        local_actor: &Iri,
+    ) -> Result<Vec<FollowerDeliveryTarget>, Self::Error> {
         let latest_follower = self
             .latest_follower
             .lock()
@@ -229,7 +232,16 @@ impl FollowerDeliveryStore for ExampleStorage {
         Ok(latest_follower
             .as_ref()
             .filter(|(_, following)| following == local_actor)
-            .map(|(follower, _)| vec![follower.clone()])
+            .map(|(follower, _)| {
+                vec![FollowerDeliveryTarget {
+                    actor_id: follower.id.clone(),
+                    inbox: follower.inbox.clone(),
+                    shared_inbox: follower
+                        .endpoints
+                        .as_ref()
+                        .and_then(|endpoints| endpoints.shared_inbox.clone()),
+                }]
+            })
             .unwrap_or_default())
     }
 }
