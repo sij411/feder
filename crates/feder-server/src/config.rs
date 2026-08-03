@@ -13,14 +13,12 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-pub mod actor;
-pub mod app;
-pub mod config;
-pub mod error;
-pub mod inbox;
-pub mod storage;
-pub mod webfinger;
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum OutboundAddressPolicy {
+    /// Allows only publicly routable destination addresses.
+    #[default]
+    PublicOnly,
 
-pub use app::{AppState, build_router};
-pub use config::{InboxAuthPolicy, RuntimeConfig, StorageConfig};
-pub use error::Error;
+    /// Allows private and special-use destinations. This disables SSRF protection.
+    AllowPrivateAddress,
+}

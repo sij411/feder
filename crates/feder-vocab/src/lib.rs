@@ -29,6 +29,9 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer, ser::SerializeSeq}
 /// The canonical Activity Streams JSON-LD context URL.
 pub const ACTIVITYSTREAMS_CONTEXT: &str = "https://www.w3.org/ns/activitystreams";
 
+/// The JSON-LD context for the security vocabulary used by actor public keys.
+pub const SECURITY_CONTEXT: &str = "https://w3id.org/security/v1";
+
 /// An absolute ActivityPub/ActivityStreams identifier.
 pub type Iri = IriString;
 
@@ -170,7 +173,40 @@ macro_rules! activitystreams_type {
 activitystreams_type!(NoteType, Note);
 activitystreams_type!(FollowType, Follow);
 activitystreams_type!(AcceptType, Accept);
+activitystreams_type!(UndoType, Undo);
 activitystreams_type!(CreateType, Create);
+activitystreams_type!(OrderedCollectionType, OrderedCollection);
+
+/// A JSON-LD context represented by one or more IRIs.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(untagged)]
+pub enum Context {
+    Iri(Iri),
+    Iris(Vec<Iri>),
+}
+
+impl Context {
+    #[must_use]
+    pub fn one(context: Iri) -> Self {
+        Self::Iri(context)
+    }
+
+    #[must_use]
+    pub fn many(contexts: impl Into<Vec<Iri>>) -> Self {
+        Self::Iris(contexts.into())
+    }
+
+    fn include(&mut self, context: Iri) {
+        match self {
+            Self::Iri(existing) if existing == &context => {}
+            Self::Iri(existing) => {
+                *self = Self::Iris(Vec::from([existing.clone(), context]));
+            }
+            Self::Iris(existing) if !existing.contains(&context) => existing.push(context),
+            Self::Iris(_) => {}
+        }
+    }
+}
 
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub enum ActorType {
@@ -189,22 +225,55 @@ pub struct Endpoints {
     pub shared_inbox: Option<Iri>,
 }
 
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+pub enum CryptographicKeyType {
+    #[default]
+    CryptographicKey,
+}
+
+/// A public key published by an ActivityPub actor.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct CryptographicKey {
+    pub id: Iri,
+    #[serde(rename = "type", default)]
+    pub kind: CryptographicKeyType,
+    pub owner: Iri,
+    #[serde(rename = "publicKeyPem")]
+    pub public_key_pem: String,
+}
+
+impl CryptographicKey {
+    #[must_use]
+    pub fn new(id: Iri, owner: Iri, public_key_pem: String) -> Self {
+        Self {
+            id,
+            kind: CryptographicKeyType::default(),
+            owner,
+            public_key_pem,
+        }
+    }
+}
+
 /// A minimal ActivityPub actor.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct Actor {
     #[serde(rename = "@context", skip_serializing_if = "Option::is_none")]
-    pub context: Option<Iri>,
+    pub context: Option<Context>,
     #[serde(rename = "type")]
     pub kind: ActorType,
     pub id: Iri,
     pub inbox: Iri,
     pub outbox: Iri,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub followers: Option<Iri>,
     #[serde(rename = "preferredUsername", skip_serializing_if = "Option::is_none")]
     pub preferred_username: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub endpoints: Option<Endpoints>,
+    #[serde(rename = "publicKey", skip_serializing_if = "Option::is_none")]
+    pub public_key: Option<Reference<CryptographicKey>>,
 }
 
 impl Actor {
@@ -216,19 +285,37 @@ impl Actor {
     #[must_use]
     pub fn new(kind: ActorType, id: Iri, inbox: Iri, outbox: Iri) -> Self {
         Self {
-            context: Some(
+            context: Some(Context::one(
                 ACTIVITYSTREAMS_CONTEXT
                     .parse()
                     .expect("valid ActivityStreams IRI"),
-            ),
+            )),
             kind,
             id,
             inbox,
             outbox,
+            followers: None,
             preferred_username: None,
             name: None,
             endpoints: None,
+            public_key: None,
         }
+    }
+
+    pub fn set_public_key(&mut self, public_key: Reference<CryptographicKey>) {
+        let security_context = SECURITY_CONTEXT
+            .parse()
+            .expect("valid security context IRI");
+        self.context
+            .get_or_insert_with(|| {
+                Context::one(
+                    ACTIVITYSTREAMS_CONTEXT
+                        .parse()
+                        .expect("valid ActivityStreams IRI"),
+                )
+            })
+            .include(security_context);
+        self.public_key = Some(public_key);
     }
 }
 
@@ -242,10 +329,18 @@ pub struct Note {
     pub id: Iri,
     #[serde(rename = "attributedTo", skip_serializing_if = "Option::is_none")]
     pub attributed_to: Option<Reference<Actor>>,
+    #[serde(default, skip_serializing_if = "References::is_empty")]
+    pub to: References<Iri>,
+    #[serde(default, skip_serializing_if = "References::is_empty")]
+    pub cc: References<Iri>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub content: Option<String>,
+    #[serde(rename = "mediaType", skip_serializing_if = "Option::is_none")]
+    pub media_type: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub published: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub url: Option<Iri>,
 }
 
 impl Note {
@@ -260,8 +355,12 @@ impl Note {
             kind: NoteType::default(),
             id,
             attributed_to: None,
+            to: References::new(),
+            cc: References::new(),
             content: None,
+            media_type: None,
             published: None,
+            url: None,
         }
     }
 }
@@ -324,6 +423,35 @@ impl Accept {
     }
 }
 
+/// A minimal Undo activity for a Follow.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct Undo {
+    #[serde(rename = "@context", skip_serializing_if = "Option::is_none")]
+    pub context: Option<Iri>,
+    #[serde(rename = "type")]
+    pub kind: UndoType,
+    pub id: Iri,
+    pub actor: Reference<Actor>,
+    pub object: Reference<Follow>,
+}
+
+impl Undo {
+    #[must_use]
+    pub fn new(id: Iri, actor: Reference<Actor>, object: Reference<Follow>) -> Self {
+        Self {
+            context: Some(
+                ACTIVITYSTREAMS_CONTEXT
+                    .parse()
+                    .expect("valid ActivityStreams IRI"),
+            ),
+            kind: UndoType::default(),
+            id,
+            actor,
+            object,
+        }
+    }
+}
+
 /// A minimal Create activity for a concrete object type.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct Create<T> {
@@ -334,6 +462,10 @@ pub struct Create<T> {
     pub id: Iri,
     pub actor: Reference<Actor>,
     pub object: Reference<T>,
+    #[serde(default, skip_serializing_if = "References::is_empty")]
+    pub to: References<Iri>,
+    #[serde(default, skip_serializing_if = "References::is_empty")]
+    pub cc: References<Iri>,
 }
 
 impl<T> Create<T> {
@@ -349,6 +481,39 @@ impl<T> Create<T> {
             id,
             actor,
             object,
+            to: References::new(),
+            cc: References::new(),
+        }
+    }
+}
+
+/// A minimal ActivityStreams ordered collection.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct OrderedCollection<T> {
+    #[serde(rename = "@context", skip_serializing_if = "Option::is_none")]
+    pub context: Option<Iri>,
+    #[serde(rename = "type")]
+    pub kind: OrderedCollectionType,
+    pub id: Iri,
+    #[serde(rename = "totalItems")]
+    pub total_items: u64,
+    #[serde(rename = "orderedItems")]
+    pub ordered_items: Vec<T>,
+}
+
+impl<T> OrderedCollection<T> {
+    #[must_use]
+    pub fn new(id: Iri, total_items: u64, ordered_items: Vec<T>) -> Self {
+        Self {
+            context: Some(
+                ACTIVITYSTREAMS_CONTEXT
+                    .parse()
+                    .expect("valid ActivityStreams IRI"),
+            ),
+            kind: OrderedCollectionType::default(),
+            id,
+            total_items,
+            ordered_items,
         }
     }
 }
@@ -359,6 +524,18 @@ mod tests {
     use alloc::string::ToString;
     use serde::de::DeserializeOwned;
     use serde_json::json;
+
+    #[test]
+    fn cryptographic_key_defaults_missing_type() {
+        let key: CryptographicKey = serde_json::from_value(serde_json::json!({
+            "id": "https://example.com/users/alice#main-key",
+            "owner": "https://example.com/users/alice",
+            "publicKeyPem": "-----BEGIN PUBLIC KEY-----\ntest\n-----END PUBLIC KEY-----"
+        }))
+        .expect("deserialize key without type");
+
+        assert_eq!(key.kind, CryptographicKeyType::CryptographicKey);
+    }
 
     fn roundtrip<T>(value: &T) -> T
     where
@@ -454,11 +631,13 @@ mod tests {
         note.content = Some("Hello, fediverse.".to_string());
         note.published = Some("2026-05-29T06:30:00Z".to_string());
 
-        let create = Create::new(
+        let mut create = Create::new(
             iri("https://example.com/activities/create/1"),
             Reference::id(iri("https://example.com/users/alice")),
             Reference::object(note),
         );
+        create.to = References::one(iri("https://www.w3.org/ns/activitystreams#Public"));
+        create.cc = References::one(iri("https://example.com/users/alice/followers"));
 
         assert_eq!(roundtrip(&create), create);
     }

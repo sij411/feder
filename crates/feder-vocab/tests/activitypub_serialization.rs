@@ -14,11 +14,12 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 use feder_vocab::{
-    ACTIVITYSTREAMS_CONTEXT, Accept, Create, Follow, Iri, Note, Reference, References,
+    ACTIVITYSTREAMS_CONTEXT, Accept, Actor, Create, CryptographicKey, Follow, Iri, Note,
+    OrderedCollection, Reference, References, SECURITY_CONTEXT, Undo,
 };
 use serde_json::{Value, json};
 
-fn serialize(value: impl serde::Serialize) -> Value {
+fn serialize_to_value(value: impl serde::Serialize) -> Value {
     serde_json::to_value(value).expect("serialize vocab value")
 }
 
@@ -40,6 +41,38 @@ fn incoming_follow_json() -> serde_json::Value {
             "preferredUsername": "alice"
         }
     })
+}
+
+#[test]
+fn actor_serializes_embedded_cryptographic_key() {
+    let actor_id = iri("https://example.com/users/alice");
+    let mut actor = Actor::person(
+        actor_id.clone(),
+        iri("https://example.com/users/alice/inbox"),
+        iri("https://example.com/users/alice/outbox"),
+    );
+    actor.set_public_key(Reference::object(CryptographicKey::new(
+        iri("https://example.com/users/alice#main-key"),
+        actor_id,
+        "-----BEGIN PUBLIC KEY-----\ntest\n-----END PUBLIC KEY-----\n".to_string(),
+    )));
+
+    assert_eq!(
+        serialize_to_value(actor),
+        json!({
+            "@context": [ACTIVITYSTREAMS_CONTEXT, SECURITY_CONTEXT],
+            "type": "Person",
+            "id": "https://example.com/users/alice",
+            "inbox": "https://example.com/users/alice/inbox",
+            "outbox": "https://example.com/users/alice/outbox",
+            "publicKey": {
+                "id": "https://example.com/users/alice#main-key",
+                "type": "CryptographicKey",
+                "owner": "https://example.com/users/alice",
+                "publicKeyPem": "-----BEGIN PUBLIC KEY-----\ntest\n-----END PUBLIC KEY-----\n"
+            }
+        })
+    );
 }
 
 #[test]
@@ -68,7 +101,7 @@ fn accept_activity_can_embed_follow_activity() {
     );
 
     assert_eq!(
-        serialize(outgoing_accept),
+        serialize_to_value(outgoing_accept),
         json!({
             "@context": ACTIVITYSTREAMS_CONTEXT,
             "type": "Accept",
@@ -92,39 +125,99 @@ fn accept_activity_can_embed_follow_activity() {
 }
 
 #[test]
-fn local_note_can_shape_create_note_activity() {
+fn undo_activity_can_embed_follow_activity() {
+    let follow: Follow =
+        serde_json::from_value(incoming_follow_json()).expect("deserialize incoming follow");
+    let undo = Undo::new(
+        iri("https://remote.example/activities/undo/1"),
+        Reference::id(iri("https://remote.example/users/bob")),
+        Reference::object(follow),
+    );
+
+    assert_eq!(
+        serialize_to_value(undo),
+        json!({
+            "@context": ACTIVITYSTREAMS_CONTEXT,
+            "type": "Undo",
+            "id": "https://remote.example/activities/undo/1",
+            "actor": "https://remote.example/users/bob",
+            "object": incoming_follow_json()
+        })
+    );
+}
+
+#[test]
+fn ordered_collection_serializes_actor_iris() {
+    let collection = OrderedCollection::new(
+        iri("https://example.com/users/alice/followers"),
+        2,
+        vec![
+            iri("https://remote.example/users/bob"),
+            iri("https://another.example/users/carol"),
+        ],
+    );
+
+    assert_eq!(
+        serialize_to_value(collection),
+        json!({
+            "@context": ACTIVITYSTREAMS_CONTEXT,
+            "type": "OrderedCollection",
+            "id": "https://example.com/users/alice/followers",
+            "totalItems": 2,
+            "orderedItems": [
+                "https://remote.example/users/bob",
+                "https://another.example/users/carol"
+            ]
+        })
+    );
+}
+
+#[test]
+fn local_note_serializes_as_create_activity() {
     let mut note = Note::new(iri("https://example.com/notes/1"));
     note.attributed_to = Some(Reference::id(iri("https://example.com/users/alice")));
+    note.to = References::one(iri("https://www.w3.org/ns/activitystreams#Public"));
+    note.cc = References::one(iri("https://example.com/users/alice/followers"));
     note.content = Some("Hello from Feder.".to_string());
+    note.media_type = Some("text/html".to_string());
     note.published = Some("2026-06-02T00:00:00Z".to_string());
+    note.url = Some(iri("https://example.com/@alice/1"));
 
-    let create = Create::new(
+    let mut create = Create::new(
         iri("https://example.com/activities/create/1"),
         Reference::id(iri("https://example.com/users/alice")),
         Reference::object(note),
     );
+    create.to = References::one(iri("https://www.w3.org/ns/activitystreams#Public"));
+    create.cc = References::one(iri("https://example.com/users/alice/followers"));
 
     assert_eq!(
-        serialize(create),
+        serialize_to_value(create),
         json!({
             "@context": ACTIVITYSTREAMS_CONTEXT,
             "type": "Create",
             "id": "https://example.com/activities/create/1",
             "actor": "https://example.com/users/alice",
+            "to": "https://www.w3.org/ns/activitystreams#Public",
+            "cc": "https://example.com/users/alice/followers",
             "object": {
                 "@context": ACTIVITYSTREAMS_CONTEXT,
                 "type": "Note",
                 "id": "https://example.com/notes/1",
                 "attributedTo": "https://example.com/users/alice",
+                "to": "https://www.w3.org/ns/activitystreams#Public",
+                "cc": "https://example.com/users/alice/followers",
                 "content": "Hello from Feder.",
-                "published": "2026-06-02T00:00:00Z"
+                "mediaType": "text/html",
+                "published": "2026-06-02T00:00:00Z",
+                "url": "https://example.com/@alice/1"
             }
         })
     );
 }
 
 #[test]
-fn reference_keeps_id_and_embedded_object_shapes_distinct() {
+fn reference_deserializes_id_and_embedded_object_distinctly() {
     let id_reference: Reference<Note> =
         serde_json::from_value(json!("https://example.com/notes/1"))
             .expect("deserialize id reference");
@@ -141,7 +234,7 @@ fn reference_keeps_id_and_embedded_object_shapes_distinct() {
 }
 
 #[test]
-fn references_can_represent_common_recipient_shapes() {
+fn references_deserialize_single_and_multiple_recipients() {
     let single: References<Iri> =
         serde_json::from_value(json!("https://www.w3.org/ns/activitystreams#Public"))
             .expect("deserialize single recipient");
