@@ -334,6 +334,35 @@ async fn inbox_rejects_invalid_content_before_dispatch() {
 }
 
 #[tokio::test]
+async fn ignores_accept_and_undo_of_unsupported_activities() {
+    for kind in ["Accept", "Undo"] {
+        let body = serde_json::to_vec(&json!({
+            "@context": "https://www.w3.org/ns/activitystreams",
+            "type": kind,
+            "id": format!("https://remote.example/activities/{kind}-1"),
+            "actor": "https://remote.example/users/bob",
+            "object": {
+                "type": "Like",
+                "id": "https://remote.example/activities/like-1",
+                "actor": "https://remote.example/users/bob",
+                "object": format!("{ORIGIN}/users/alice/posts/1")
+            }
+        }))
+        .expect("serialize unsupported nested activity");
+
+        let response = post_inbox(
+            test_router(),
+            "/users/alice/inbox",
+            "application/activity+json",
+            body,
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::ACCEPTED, "{kind}");
+    }
+}
+
+#[tokio::test]
 async fn personal_inbox_rejects_an_unknown_local_actor() {
     let response = post_inbox(
         test_router(),

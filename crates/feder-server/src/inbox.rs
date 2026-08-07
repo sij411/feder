@@ -185,6 +185,15 @@ where
     match value.get("type").and_then(Value::as_str) {
         Some("Follow") => {}
         Some("Accept") => {
+            if value
+                .get("object")
+                .filter(|object| object.is_object())
+                .and_then(|object| object.get("type"))
+                .and_then(Value::as_str)
+                .is_some_and(|kind| kind != "Follow")
+            {
+                return Ok(StatusCode::ACCEPTED.into_response());
+            }
             let accept: Accept = from_value(value).map_err(|_| StatusCode::BAD_REQUEST)?;
             let remote_actor = match verified_actor {
                 Some(actor) => actor,
@@ -222,6 +231,14 @@ where
             return Ok(StatusCode::ACCEPTED.into_response());
         }
         Some("Undo") => {
+            if value
+                .get("object")
+                .and_then(|object| object.get("type"))
+                .and_then(Value::as_str)
+                != Some("Follow")
+            {
+                return Ok(StatusCode::ACCEPTED.into_response());
+            }
             let undo: Undo = from_value(value).map_err(|_| StatusCode::BAD_REQUEST)?;
             let remote_actor = match verified_actor {
                 Some(actor) => actor,
