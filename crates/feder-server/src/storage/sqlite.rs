@@ -259,8 +259,8 @@ impl ServerStorage for SqliteStore {
             VALUES (?1, ?2, ?3, 'pending')
             ON CONFLICT(follow_activity_id) DO UPDATE SET
                 local_actor_id = excluded.local_actor_id,
-                remote_actor_json = excluded.remote_actor_json,
-                state = 'pending'
+                remote_actor_json = excluded.remote_actor_json
+            WHERE outbound_follows.state = 'pending'
             "#,
             params![
                 follow.follow_activity.as_str(),

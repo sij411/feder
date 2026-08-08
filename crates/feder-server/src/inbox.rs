@@ -324,8 +324,10 @@ async fn verify_signed_request(
         .and_then(|value| value.to_str().ok())
         .ok_or(StatusCode::UNAUTHORIZED)?;
     let signature = parse_signature_header(signature_header).ok_or(StatusCode::UNAUTHORIZED)?;
-    if signature.algorithm != "rsa-sha256"
-        || signature.signed_headers.first().map(String::as_str) != Some("(request-target)")
+    if !matches!(
+        signature.algorithm.as_deref(),
+        None | Some("rsa-sha256" | "hs2019")
+    ) || signature.signed_headers.first().map(String::as_str) != Some("(request-target)")
     {
         return Err(StatusCode::UNAUTHORIZED);
     }
@@ -564,7 +566,7 @@ fn verify_request_digest(headers: &HeaderMap, body: &[u8]) -> Result<(), StatusC
 
 struct ParsedSignature {
     key_id: String,
-    algorithm: String,
+    algorithm: Option<String>,
     signed_headers: Vec<String>,
     signature: String,
 }
@@ -599,7 +601,9 @@ fn parse_signature_header(header: &str) -> Option<ParsedSignature> {
     }
 
     let key_id = parameters.remove("keyid")?;
-    let algorithm = parameters.remove("algorithm")?;
+    let algorithm = parameters
+        .remove("algorithm")
+        .map(|algorithm| algorithm.to_ascii_lowercase());
     let signed_headers = parameters
         .remove("headers")?
         .split_ascii_whitespace()
@@ -611,7 +615,7 @@ fn parse_signature_header(header: &str) -> Option<ParsedSignature> {
     }
     Some(ParsedSignature {
         key_id,
-        algorithm: algorithm.to_ascii_lowercase(),
+        algorithm,
         signed_headers,
         signature,
     })

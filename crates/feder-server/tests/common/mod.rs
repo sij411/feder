@@ -85,7 +85,7 @@ pub fn test_router_with_policy(inbox_auth_policy: InboxAuthPolicy) -> Router {
     test_router_with_storage_and_policy(|_| {}, inbox_auth_policy)
 }
 
-fn test_router_with_storage_and_policy(
+pub fn test_router_with_storage_and_policy(
     configure: impl FnOnce(&SqliteStore),
     inbox_auth_policy: InboxAuthPolicy,
 ) -> Router {
@@ -96,12 +96,19 @@ pub fn test_server_with_storage(
     configure: impl FnOnce(&SqliteStore),
     inbox_auth_policy: InboxAuthPolicy,
 ) -> FederServer<TestActors, SqliteStore> {
-    let actor = local_actor();
     let storage = SqliteStore::open_in_memory().expect("open in-memory store");
+    configure(&storage);
+    test_server_with_store(storage, inbox_auth_policy)
+}
+
+pub fn test_server_with_store(
+    storage: SqliteStore,
+    inbox_auth_policy: InboxAuthPolicy,
+) -> FederServer<TestActors, SqliteStore> {
+    let actor = local_actor();
     storage
         .insert_actor_key_pair(&actor.id, &actor_key_pair())
         .expect("store actor key pair");
-    configure(&storage);
     FederServer::with_outbound_address_policy(
         TestActors { actor },
         storage,

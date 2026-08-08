@@ -10,7 +10,10 @@ use feder_vocab::{Actor, Iri, References};
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
-use crate::common::{ORIGIN, RecordedRequest, iri, spawn_inbox_server, test_server_with_storage};
+use crate::common::{
+    ORIGIN, RecordedRequest, iri, spawn_inbox_server, test_server_with_storage,
+    test_server_with_store,
+};
 
 fn create_note_input() -> CreateNoteInput {
     CreateNoteInput {
@@ -41,9 +44,13 @@ async fn spawn_remote_actor() -> (
         "type": "Person",
         "id": actor_id,
         "inbox": inbox,
-        "outbox": format!("http://{address}/users/bob/outbox")
+        "outbox": format!("http://{address}/users/bob/outbox"),
+        "endpoints": {
+            "sharedInbox": format!("http://{address}/shared-inbox")
+        }
     });
     let (sender, receiver) = tokio::sync::mpsc::channel(2);
+    let shared_sender = sender.clone();
     let app = Router::new()
         .route(
             "/users/bob",
@@ -68,6 +75,23 @@ async fn spawn_remote_actor() -> (
                     }
                 },
             ),
+        )
+        .route(
+            "/shared-inbox",
+            axum::routing::post(
+                move |headers: axum::http::HeaderMap,
+                      uri: axum::http::Uri,
+                      body: axum::body::Bytes| {
+                    let sender = shared_sender.clone();
+                    async move {
+                        sender
+                            .send(RecordedRequest { headers, uri, body })
+                            .await
+                            .expect("request receiver remains open");
+                        axum::http::StatusCode::ACCEPTED
+                    }
+                },
+            ),
         );
     let task = tokio::spawn(async move {
         axum::serve(listener, app)
@@ -81,7 +105,10 @@ async fn spawn_remote_actor() -> (
 #[tokio::test]
 async fn outbound_follow_is_persisted_before_signed_delivery() {
     let (remote_actor_id, mut requests, remote_server) = spawn_remote_actor().await;
-    let server = test_server_with_storage(|_| {}, InboxAuthPolicy::RequireSigned);
+    let directory = tempfile::tempdir().expect("create temporary database directory");
+    let database_path = directory.path().join("feder.sqlite");
+    let storage = SqliteStore::open(&database_path).expect("open store");
+    let server = test_server_with_store(storage, InboxAuthPolicy::RequireSigned);
     let local_actor_id = iri(&format!("{ORIGIN}/users/alice"));
     let follow_id = iri(&format!("{ORIGIN}/users/alice/activities/follow/1"));
 
@@ -92,11 +119,20 @@ async fn outbound_follow_is_persisted_before_signed_delivery() {
 
     assert_eq!(follow.id, follow_id);
     let request = requests.recv().await.expect("receive Follow delivery");
+    assert_eq!(request.uri.path(), "/inbox");
     assert!(request.headers.contains_key("signature"));
     let activity: Value = serde_json::from_slice(&request.body).expect("valid Follow activity");
     assert_eq!(activity["type"], "Follow");
     assert_eq!(activity["actor"], local_actor_id.as_str());
     assert_eq!(activity["object"], remote_actor_id.as_str());
+    let observer = SqliteStore::open(&database_path).expect("reopen store");
+    let pending = observer
+        .load_pending_follow(&follow_id)
+        .expect("load pending Follow")
+        .expect("pending Follow was persisted");
+    assert_eq!(pending.local_actor, local_actor_id);
+    assert_eq!(pending.remote_actor.id, remote_actor_id);
+    assert_eq!(pending.follow_activity, follow_id);
     remote_server.abort();
 }
 

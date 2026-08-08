@@ -120,6 +120,37 @@ fn confirms_only_the_expected_pending_follow() {
 }
 
 #[test]
+fn storing_pending_follow_does_not_reopen_an_accepted_relationship() {
+    let store = SqliteStore::open_in_memory().expect("open store");
+    let pending = PendingFollow {
+        local_actor: iri("https://local.example/users/alice"),
+        remote_actor: actor("https://remote.example/users/bob"),
+        follow_activity: iri("https://local.example/activities/follow/1"),
+    };
+    store
+        .store_pending_follow(&pending)
+        .expect("store pending Follow");
+    assert!(
+        store
+            .confirm_pending_follow(&pending)
+            .expect("confirm pending Follow")
+    );
+
+    let mut replacement = pending.clone();
+    replacement.remote_actor = actor("https://remote.example/users/mallory");
+    store
+        .store_pending_follow(&replacement)
+        .expect("retry storing accepted Follow");
+
+    assert_eq!(
+        store
+            .load_pending_follow(&pending.follow_activity)
+            .expect("load accepted Follow"),
+        None
+    );
+}
+
+#[test]
 fn actor_key_pair_roundtrips() {
     let store = SqliteStore::open_in_memory().expect("open store");
     let actor_id = iri("https://local.example/users/alice");

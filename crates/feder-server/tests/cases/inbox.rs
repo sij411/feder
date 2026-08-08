@@ -4,13 +4,19 @@ use axum::{
     http::{HeaderMap, Request, StatusCode, Uri, header::CONTENT_TYPE},
     routing::{get, post},
 };
-use feder_core::key::{create_sha256_digest_header, sign_draft_cavage};
-use feder_server::InboxAuthPolicy;
+use feder_core::{
+    follow::PendingFollow,
+    key::{create_sha256_digest_header, sign_draft_cavage},
+    storage::ServerStorage,
+};
+use feder_server::{InboxAuthPolicy, build_router, storage::SqliteStore};
+use feder_vocab::{Actor, Iri};
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
 use crate::common::{
-    HANDLE_HOST, ORIGIN, RecordedRequest, actor_key_pair, test_router, test_router_with_policy,
+    HANDLE_HOST, ORIGIN, RecordedRequest, actor_key_pair, iri, test_router,
+    test_router_with_policy, test_server_with_store,
 };
 
 fn follow_body(actor_id: &str) -> Vec<u8> {
@@ -122,6 +128,27 @@ async fn post_signed_inbox(
     delivered_body: impl Into<Body>,
     host: &str,
 ) -> axum::response::Response {
+    post_signed_inbox_with_algorithm(
+        app,
+        uri,
+        actor_id,
+        signed_body,
+        delivered_body,
+        host,
+        Some("rsa-sha256"),
+    )
+    .await
+}
+
+async fn post_signed_inbox_with_algorithm(
+    app: Router,
+    uri: &str,
+    actor_id: &str,
+    signed_body: &[u8],
+    delivered_body: impl Into<Body>,
+    host: &str,
+    algorithm: Option<&str>,
+) -> axum::response::Response {
     let date = httpdate::fmt_http_date(std::time::SystemTime::now());
     let digest = create_sha256_digest_header(signed_body);
     let headers = [
@@ -130,7 +157,7 @@ async fn post_signed_inbox(
         ("digest", digest.as_str()),
         ("host", host),
     ];
-    let signature = sign_draft_cavage(
+    let mut signature = sign_draft_cavage(
         &actor_key_pair(),
         &format!("{actor_id}#main-key"),
         "POST",
@@ -138,6 +165,16 @@ async fn post_signed_inbox(
         &headers,
     )
     .expect("sign inbox request");
+    if algorithm != Some("rsa-sha256") {
+        signature = match algorithm {
+            Some(algorithm) => signature.replacen(
+                "algorithm=\"rsa-sha256\"",
+                &format!("algorithm=\"{algorithm}\""),
+                1,
+            ),
+            None => signature.replacen("algorithm=\"rsa-sha256\",", "", 1),
+        };
+    }
 
     app.oneshot(
         Request::builder()
@@ -153,6 +190,55 @@ async fn post_signed_inbox(
     )
     .await
     .expect("signed inbox response")
+}
+
+fn accept_body(actor_id: &str, follow_id: &Iri) -> Vec<u8> {
+    serde_json::to_vec(&json!({
+        "@context": "https://www.w3.org/ns/activitystreams",
+        "type": "Accept",
+        "id": format!("{actor_id}/accepts/1"),
+        "actor": actor_id,
+        "object": follow_id,
+    }))
+    .expect("serialize Accept")
+}
+
+async fn assert_valid_accept_is_confirmed(inbox_uri: &str) {
+    let (actor_id, _requests, remote_server) = spawn_remote_actor().await;
+    let directory = tempfile::tempdir().expect("create temporary database directory");
+    let database_path = directory.path().join("feder.sqlite");
+    let storage = SqliteStore::open(&database_path).expect("open store");
+    let follow_id = iri(&format!("{ORIGIN}/users/alice/activities/follow/1"));
+    let pending = PendingFollow {
+        local_actor: iri(&format!("{ORIGIN}/users/alice")),
+        remote_actor: Actor::person(
+            iri(&actor_id),
+            iri(&format!("{actor_id}/inbox")),
+            iri(&format!("{actor_id}/outbox")),
+        ),
+        follow_activity: follow_id.clone(),
+    };
+    storage
+        .store_pending_follow(&pending)
+        .expect("store pending Follow");
+    let app = build_router(test_server_with_store(
+        storage,
+        InboxAuthPolicy::RequireSigned,
+    ));
+    let body = accept_body(&actor_id, &follow_id);
+
+    let response =
+        post_signed_inbox(app, inbox_uri, &actor_id, &body, body.clone(), HANDLE_HOST).await;
+
+    assert_eq!(response.status(), StatusCode::ACCEPTED);
+    let observer = SqliteStore::open(&database_path).expect("reopen store");
+    assert_eq!(
+        observer
+            .load_pending_follow(&follow_id)
+            .expect("load accepted Follow"),
+        None
+    );
+    remote_server.abort();
 }
 
 async fn follower_count(app: Router) -> u64 {
@@ -199,6 +285,60 @@ async fn valid_signed_follow_is_stored_and_accept_is_sent() {
     assert_eq!(activity["type"], "Accept");
     assert_eq!(activity["actor"], format!("{ORIGIN}/users/alice"));
     remote_server.abort();
+}
+
+#[tokio::test]
+async fn signed_follow_accepts_hs2019_algorithm() {
+    let (actor_id, mut requests, remote_server) = spawn_remote_actor().await;
+    let app = test_router_with_policy(InboxAuthPolicy::RequireSigned);
+    let body = follow_body(&actor_id);
+
+    let response = post_signed_inbox_with_algorithm(
+        app,
+        "/users/alice/inbox",
+        &actor_id,
+        &body,
+        body.clone(),
+        HANDLE_HOST,
+        Some("hs2019"),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::ACCEPTED);
+    requests.recv().await.expect("receive Accept activity");
+    remote_server.abort();
+}
+
+#[tokio::test]
+async fn signed_follow_accepts_omitted_algorithm() {
+    let (actor_id, mut requests, remote_server) = spawn_remote_actor().await;
+    let app = test_router_with_policy(InboxAuthPolicy::RequireSigned);
+    let body = follow_body(&actor_id);
+
+    let response = post_signed_inbox_with_algorithm(
+        app,
+        "/users/alice/inbox",
+        &actor_id,
+        &body,
+        body.clone(),
+        HANDLE_HOST,
+        None,
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::ACCEPTED);
+    requests.recv().await.expect("receive Accept activity");
+    remote_server.abort();
+}
+
+#[tokio::test]
+async fn personal_inbox_confirms_a_valid_accept() {
+    assert_valid_accept_is_confirmed("/users/alice/inbox").await;
+}
+
+#[tokio::test]
+async fn shared_inbox_confirms_a_valid_accept() {
+    assert_valid_accept_is_confirmed("/inbox").await;
 }
 
 #[tokio::test]

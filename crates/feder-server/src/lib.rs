@@ -84,7 +84,12 @@ impl<A, S> FederServer<A, S> {
         })
     }
 
-    // for development
+    /// Constructs a server with an explicit outbound-address policy.
+    ///
+    /// Allowing private addresses disables Feder's SSRF protection and must
+    /// only be used in trusted development or test environments. Production
+    /// servers should use [`FederServer::new`], which permits public addresses
+    /// only.
     pub fn with_outbound_address_policy(
         actors: A,
         storage: S,

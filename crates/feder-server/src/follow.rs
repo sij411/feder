@@ -53,14 +53,13 @@ where
             .load_actor_key_pair(&local_actor.id)
             .map_err(FollowActorError::Storage)?
             .ok_or_else(|| FollowActorError::MissingActorKey(local_actor.id.clone()))?;
-        let inbox = remote_actor
-            .endpoints
-            .as_ref()
-            .and_then(|endpoints| endpoints.shared_inbox.as_ref())
-            .unwrap_or(&remote_actor.inbox);
-
         self.sender()
-            .send_activity(&local_actor, &key_pair, &outcome.activity, inbox)
+            .send_activity(
+                &local_actor,
+                &key_pair,
+                &outcome.activity,
+                &remote_actor.inbox,
+            )
             .await
             .map_err(FollowActorError::ActivitySender)?;
 
