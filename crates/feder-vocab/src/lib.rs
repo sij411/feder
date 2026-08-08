@@ -160,6 +160,31 @@ where
     }
 }
 
+fn deserialize_addressing<'de, D>(deserializer: D) -> Result<References<Iri>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    fn parse_iri<E>(value: String) -> Result<Iri, E>
+    where
+        E: serde::de::Error,
+    {
+        let value = match value.as_str() {
+            "Public" | "as:Public" => "https://www.w3.org/ns/activitystreams#Public",
+            _ => &value,
+        };
+        value.parse().map_err(E::custom)
+    }
+
+    match OneOrMany::<String>::deserialize(deserializer)? {
+        OneOrMany::One(value) => parse_iri(value).map(References::one),
+        OneOrMany::Many(values) => values
+            .into_iter()
+            .map(parse_iri)
+            .collect::<Result<Vec<_>, _>>()
+            .map(References::many),
+    }
+}
+
 macro_rules! activitystreams_type {
     ($name:ident, $variant:ident) => {
         #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
@@ -329,9 +354,17 @@ pub struct Note {
     pub id: Iri,
     #[serde(rename = "attributedTo", skip_serializing_if = "Option::is_none")]
     pub attributed_to: Option<Reference<Actor>>,
-    #[serde(default, skip_serializing_if = "References::is_empty")]
+    #[serde(
+        default,
+        deserialize_with = "deserialize_addressing",
+        skip_serializing_if = "References::is_empty"
+    )]
     pub to: References<Iri>,
-    #[serde(default, skip_serializing_if = "References::is_empty")]
+    #[serde(
+        default,
+        deserialize_with = "deserialize_addressing",
+        skip_serializing_if = "References::is_empty"
+    )]
     pub cc: References<Iri>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub content: Option<String>,
@@ -462,9 +495,17 @@ pub struct Create<T> {
     pub id: Iri,
     pub actor: Reference<Actor>,
     pub object: Reference<T>,
-    #[serde(default, skip_serializing_if = "References::is_empty")]
+    #[serde(
+        default,
+        deserialize_with = "deserialize_addressing",
+        skip_serializing_if = "References::is_empty"
+    )]
     pub to: References<Iri>,
-    #[serde(default, skip_serializing_if = "References::is_empty")]
+    #[serde(
+        default,
+        deserialize_with = "deserialize_addressing",
+        skip_serializing_if = "References::is_empty"
+    )]
     pub cc: References<Iri>,
 }
 
@@ -640,6 +681,27 @@ mod tests {
         create.cc = References::one(iri("https://example.com/users/alice/followers"));
 
         assert_eq!(roundtrip(&create), create);
+    }
+
+    #[test]
+    fn addressing_normalizes_public_compact_terms() {
+        for public_address in ["Public", "as:Public"] {
+            let note: Note = serde_json::from_value(json!({
+                "type": "Note",
+                "id": "https://example.com/notes/1",
+                "to": public_address,
+            }))
+            .expect("deserialize compact Public term");
+
+            assert_eq!(
+                note.to,
+                References::one(iri("https://www.w3.org/ns/activitystreams#Public"))
+            );
+            assert_eq!(
+                serde_json::to_value(note).expect("serialize normalized Note")["to"],
+                json!("https://www.w3.org/ns/activitystreams#Public")
+            );
+        }
     }
 
     #[test]

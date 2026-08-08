@@ -1,0 +1,68 @@
+// Feder: A portable ActivityPub core for many runtimes.
+// Copyright (C) 2026 Feder contributors
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Affero General Public License as published by
+// the Free Software Foundation, version 3.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU Affero General Public License for more details.
+//
+// You should have received a copy of the GNU Affero General Public License
+// along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
+use alloc::vec::Vec;
+
+use feder_vocab::{Actor, Iri, Note};
+
+use crate::follow::PendingFollow;
+#[cfg(feature = "http-signatures")]
+use crate::key::ActorKeyPair;
+
+pub trait Storage {
+    type Error;
+}
+
+pub trait ServerStorage: Storage {
+    fn store_follower(&self, follower: &Actor, following: &Iri) -> Result<(), Self::Error>;
+
+    #[cfg(feature = "http-signatures")]
+    fn load_actor_key_pair(&self, actor_id: &Iri) -> Result<Option<ActorKeyPair>, Self::Error>;
+
+    fn remove_follower(&self, follower: &Iri, following: &Iri) -> Result<(), Self::Error>;
+
+    fn list_followers(&self, following: &Iri) -> Result<Vec<Iri>, Self::Error>;
+
+    fn store_pending_follow(&self, follow: &PendingFollow) -> Result<(), Self::Error>;
+
+    fn load_pending_follow(
+        &self,
+        follow_activity: &Iri,
+    ) -> Result<Option<PendingFollow>, Self::Error>;
+
+    /// Confirm `expected` only if that exact relationship is still pending.
+    fn confirm_pending_follow(&self, expected: &PendingFollow) -> Result<bool, Self::Error>;
+}
+
+pub trait NoteStore: Storage {
+    fn store_note(&self, note: &Note) -> Result<(), Self::Error>;
+
+    fn load_note(&self, note_id: &Iri) -> Result<Option<Note>, Self::Error>;
+}
+
+/// The stored addressing facts needed to deliver an activity to a follower.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FollowerDeliveryTarget {
+    pub actor_id: Iri,
+    pub inbox: Iri,
+    pub shared_inbox: Option<Iri>,
+}
+
+pub trait FollowerDeliveryStore: ServerStorage {
+    fn list_follower_delivery_targets(
+        &self,
+        local_actor: &Iri,
+    ) -> Result<Vec<FollowerDeliveryTarget>, Self::Error>;
+}
